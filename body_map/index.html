@@ -5,6 +5,7 @@
     <style>
       body {
         margin: 0;
+        padding: 0 0 12px;
         background: transparent;
         font-family: Pretendard, "Malgun Gothic", sans-serif;
       }
@@ -13,7 +14,7 @@
         gap: 6px;
         justify-content: center;
         flex-wrap: wrap;
-        margin: 0 0 4px;
+        margin: 0 0 8px;
       }
       .bar button {
         padding: 7px 14px;
@@ -35,6 +36,17 @@
       #m {
         display: flex;
         justify-content: center;
+        padding: 14px 10px;
+        border-radius: 24px;
+        background:
+          radial-gradient(
+            ellipse 55% 50% at 50% 50%,
+            rgba(49, 130, 246, 0.1) 0%,
+            rgba(49, 130, 246, 0.04) 60%,
+            rgba(49, 130, 246, 0) 100%
+          ),
+          #ffffff;
+        box-shadow: 0 2px 12px rgba(25, 31, 40, 0.05);
       }
       .rbh polygon {
         cursor: pointer;
@@ -47,7 +59,7 @@
         text-align: center;
         font-size: 13px;
         color: #5b6b7b;
-        margin-top: 4px;
+        margin-top: 8px;
         min-height: 18px;
       }
       #msg {
@@ -67,7 +79,6 @@
     <div id="tip"></div>
     <div id="msg"></div>
     <script type="module">
-      // 오픈소스 body-highlighter (npm) 의 인체 SVG를 그대로 가져다 씁니다.
       const MAP = {
         head: "head",
         neck: "neck",
@@ -107,41 +118,50 @@
         whole: "전신 · 피부 · 정신",
       };
       const $ = (id) => document.getElementById(id);
-      let A = { sel: null, side: "anterior" },
-        hl = null,
+      const state = { sel: null, side: "anterior" };
+      let highlighter = null,
         create = null;
 
-      function draw() {
-        $("front").className = A.side === "anterior" ? "on" : "";
-        $("back").className = A.side === "posterior" ? "on" : "";
-        $("whole").className = A.sel === "whole" ? "on" : "";
-        $("tip").textContent = A.sel
-          ? "선택: " + NAME[A.sel]
-          : "불편한 부위를 눌러 보세요";
-        if (!create) return;
-        const ms = Object.keys(MAP).filter((k) => A.sel && MAP[k] === A.sel);
-        if (hl) hl.destroy();
-        hl = create({
-          container: $("m"),
-          type: A.side,
-          bodyColor: "#D5DCE2",
-          highlightedColors: ["#0F766E"],
-          data: ms.length ? [{ name: "sel", muscles: ms }] : [],
-          svgStyle: { height: "500px", width: "auto" },
-          onClick: ({ muscle }) => {
-            const id = MAP[muscle];
-            if (id) pick(id);
-          },
-        });
-      }
-      function send(type, data) {
+      const send = (type, data) =>
         window.parent.postMessage(
-          Object.assign({ isStreamlitMessage: true, type }, data),
+          { isStreamlitMessage: true, type, ...data },
           "*",
         );
+
+      let lastH = 0;
+      function resize() {
+        const h = Math.ceil(document.body.getBoundingClientRect().height) + 4;
+        if (h === lastH) return;
+        lastH = h;
+        send("streamlit:setFrameHeight", { height: h });
       }
+
+      function draw() {
+        $("front").className = state.side === "anterior" ? "on" : "";
+        $("back").className = state.side === "posterior" ? "on" : "";
+        $("whole").className = state.sel === "whole" ? "on" : "";
+        $("tip").textContent = state.sel
+          ? "선택: " + NAME[state.sel]
+          : "불편한 부위를 눌러 보세요";
+        if (!create) return;
+        const muscles = Object.keys(MAP).filter(
+          (k) => state.sel && MAP[k] === state.sel,
+        );
+        if (highlighter) highlighter.destroy();
+        highlighter = create({
+          container: $("m"),
+          type: state.side,
+          bodyColor: "#BAC6D3",
+          highlightedColors: ["#0F766E"],
+          data: muscles.length ? [{ name: "sel", muscles }] : [],
+          svgStyle: { height: "480px", width: "auto" },
+          onClick: ({ muscle }) => MAP[muscle] && pick(MAP[muscle]),
+        });
+        requestAnimationFrame(resize);
+      }
+
       function pick(id) {
-        A.sel = id;
+        state.sel = id;
         draw();
         send("streamlit:setComponentValue", {
           value: { region: id, t: Date.now() },
@@ -150,19 +170,20 @@
       }
 
       $("front").onclick = () => {
-        A.side = "anterior";
+        state.side = "anterior";
         draw();
       };
       $("back").onclick = () => {
-        A.side = "posterior";
+        state.side = "posterior";
         draw();
       };
       $("whole").onclick = () => pick("whole");
+
       window.addEventListener("message", (e) => {
         if (e.data && e.data.type === "streamlit:render") {
-          A.sel = (e.data.args || {}).sel || null;
+          state.sel = (e.data.args || {}).sel || null;
           draw();
-          send("streamlit:setFrameHeight", { height: 590 });
+          resize();
         }
       });
 
@@ -176,7 +197,8 @@
       }
       send("streamlit:componentReady", { apiVersion: 1 });
       draw();
-      send("streamlit:setFrameHeight", { height: 590 });
+      resize();
+      new ResizeObserver(resize).observe(document.body);
     </script>
   </body>
 </html>
