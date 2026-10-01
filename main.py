@@ -102,6 +102,13 @@ RARE = [("모야모야병", "I675"), ("근위축성 측삭경화증(루게릭병
         ("유전성 혈관부종", "D841"), ("폐동맥 고혈압", "I270")]
 
 
+def _is_disease(cd, nm):
+    """진짜 질환만 남겨요. 산정특례 안내 코드(V…)나 외인(V~Y) 코드, '진료를 받은 당일…' 같은 긴 설명 항목은 제외."""
+    if not cd or not nm or cd[0].upper() in "VWXY":
+        return False
+    return len(nm) <= 60 and "진료를 받은" not in nm and "해당상병" not in nm
+
+
 def _hira_pages(extra):
     """심평원 상병 API를 마지막 페이지까지 모두 읽어요. (1페이지만 읽으면 뒤쪽 질환이 잘려요.)"""
     out, page = [], 1
@@ -132,7 +139,7 @@ def icd_list(prefixes: tuple):
     for pf in prefixes:
         for it in _hira_pages({"sickType": 2, "diseaseType": "SICK_CD", "searchText": pf}):
             cd, nm = it.get("sickCd", ""), it.get("sickNm", "").strip()
-            if nm and cd.startswith(pf):
+            if _is_disease(cd, nm) and cd.startswith(pf):
                 out[nm] = cd
     for nm, cd in RARE:
         if any(cd.startswith(pf) for pf in prefixes):
@@ -153,7 +160,7 @@ def name_search(q: str):
         try:
             for it in _hira_pages({"sickType": st_type, "diseaseType": "SICK_NM", "searchText": q}):
                 cd, nm = it.get("sickCd", ""), it.get("sickNm", "").strip()
-                if nm and cd:
+                if _is_disease(cd, nm):
                     out.setdefault(nm, cd)
         except Exception as e:  # noqa: BLE001
             last = e
