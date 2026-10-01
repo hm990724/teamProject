@@ -85,28 +85,83 @@ REGIONS = {
     "whole": ("전신 · 피부 · 정신", ["D", "E", "L", "F"], ["가정의학과", "피부과", "정신건강의학과"]),
 }
 
+# 질환 이름으로 직접 검색했을 때(부위 없음) 병원 화면에 넘길 진료과: 상병코드 첫 글자 기준
+ICD_DEPT = {"A": ["내과"], "B": ["내과"], "C": ["내과"], "D": ["내과"], "E": ["내분비내과"], "F": ["정신건강의학과"],
+            "G": ["신경과"], "H": ["안과", "이비인후과"], "I": ["순환기내과"], "J": ["호흡기내과"], "K": ["소화기내과"],
+            "L": ["피부과"], "M": ["정형외과"], "N": ["비뇨의학과"], "O": ["산부인과"], "P": ["소아청소년과"],
+            "Q": ["소아청소년과"], "R": ["가정의학과"], "S": ["정형외과"], "T": ["정형외과"]}
+
+DISS_URL = "https://apis.data.go.kr/B551182/diseaseInfoService1/getDissNameCodeList1"
+
+# 상병 목록 API가 놓칠 때를 대비한 희귀질환 보강 목록 (이름 검색·부위 목록에 함께 섞여요)
+RARE = [("모야모야병", "I675"), ("근위축성 측삭경화증(루게릭병)", "G122"), ("중증 근무력증", "G700"),
+        ("다발성 경화증", "G35"), ("헌팅턴병", "G10"), ("낭성 섬유증", "E84"), ("마르팡 증후군", "Q874"),
+        ("길랑-바레 증후군", "G610"), ("폰 빌레브란트병", "D680"), ("파브리병", "E752"), ("고셔병", "E752"),
+        ("프라더-윌리 증후군", "Q871"), ("레트 증후군", "F842"), ("두센 근이영양증", "G710"),
+        ("척수성 근위축증", "G120"), ("베체트병", "M352"), ("타카야수 동맥염", "M314"), ("전신 경화증", "M34"),
+        ("유전성 혈관부종", "D841"), ("폐동맥 고혈압", "I270")]
+
+
+def _hira_pages(extra):
+    """심평원 상병 API를 마지막 페이지까지 모두 읽어요. (1페이지만 읽으면 뒤쪽 질환이 잘려요.)"""
+    out, page = [], 1
+    while page <= 40:
+        r = requests.get(DISS_URL, timeout=15, params={"serviceKey": HIRA_DISEASE, "numOfRows": 500, "pageNo": page,
+                                                       "_type": "json", "medTp": 1, **extra})
+        try:
+            body = r.json()["response"]["body"]
+            items = body["items"]
+            items = items.get("item", []) if items else []
+            total = int(body.get("totalCount", 0) or 0)
+        except Exception:
+            raise RuntimeError(f"응답을 읽지 못했어요: {r.text[:150]}")
+        items = [items] if isinstance(items, dict) else items
+        out += items
+        if not items or len(out) >= total:
+            break
+        page += 1
+    return out
+
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def icd_list(prefixes: tuple):
-    """심평원 상병 목록(4단 상병)에서 해당 분류 코드로 시작하는 질환 조회. 실패하면 예외 → 캐시되지 않음."""
+    """부위 분류 코드로 시작하는 질환 전체(4단 상병, 페이지 끝까지) + 희귀질환 보강 목록. 실패하면 예외 → 캐시되지 않음."""
     if not HIRA_DISEASE:
         raise RuntimeError("HIRA_DISEASE_SERVICE_KEY가 없어요.")
     out = {}
     for pf in prefixes:
-        r = requests.get("https://apis.data.go.kr/B551182/diseaseInfoService1/getDissNameCodeList1", timeout=12,
-                         params={"serviceKey": HIRA_DISEASE, "numOfRows": 300, "pageNo": 1, "_type": "json",
-                                 "sickType": 2, "medTp": 1, "diseaseType": "SICK_CD", "searchText": pf})
-        try:
-            items = r.json()["response"]["body"]["items"]
-            items = items.get("item", []) if items else []
-        except Exception:
-            raise RuntimeError(f"응답을 읽지 못했어요: {r.text[:150]}")
-        for it in ([items] if isinstance(items, dict) else items):
+        for it in _hira_pages({"sickType": 2, "diseaseType": "SICK_CD", "searchText": pf}):
             cd, nm = it.get("sickCd", ""), it.get("sickNm", "").strip()
             if nm and cd.startswith(pf):
                 out[nm] = cd
+    for nm, cd in RARE:
+        if any(cd.startswith(pf) for pf in prefixes):
+            out.setdefault(nm, cd)
     if not out:
         raise RuntimeError("조회된 질환이 없어요.")
+    return sorted(out.items(), key=lambda x: x[1])
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def name_search(q: str):
+    """부위와 상관없이 질환명으로 전체 검색 (희귀질환 포함). 3단·4단 상병을 모두 찾아요. 예) 모야모야"""
+    q = q.strip()
+    if not HIRA_DISEASE or len(q) < 2:
+        return []
+    out, last = {}, None
+    for st_type in (2, 1):
+        try:
+            for it in _hira_pages({"sickType": st_type, "diseaseType": "SICK_NM", "searchText": q}):
+                cd, nm = it.get("sickCd", ""), it.get("sickNm", "").strip()
+                if nm and cd:
+                    out.setdefault(nm, cd)
+        except Exception as e:  # noqa: BLE001
+            last = e
+    for nm, cd in RARE:
+        if q in nm:
+            out.setdefault(nm, cd)
+    if not out and last:
+        raise RuntimeError(str(last))
     return sorted(out.items(), key=lambda x: x[1])
 
 
@@ -175,7 +230,7 @@ def candidates(df, kws, limit=40):
 
 @st.cache_data(ttl=1800, show_spinner="증상을 분석하는 중...")
 def analyze(region, text, sev, prefixes, depts):
-    """1) Gemini: 소견 + 질환명 키워드  2) pandas: 심평원 상병 목록에서 키워드로 후보 추리기
+    """1) Gemini: 소견 + 질환명 키워드  2) pandas: 심평원 상병 목록(+키워드 이름 검색, 희귀질환 포함)에서 후보 추리기
     3) Gemini: 후보 목록 '안에서만' 가능성 높은 질환을 골라 근거와 함께 순위 매김 (목록에 없는 코드는 버려요)."""
     df = pd.DataFrame(icd_list(prefixes), columns=["질환명", "상병코드"])
     ai, err, pick_err = {}, "", ""
@@ -183,9 +238,9 @@ def analyze(region, text, sev, prefixes, depts):
         prompt = (f"불편한 부위: {REGIONS[region][0]}\n불편한 정도: {sev}\n환자가 직접 쓴 설명: {text}\n\n"
                   "아래 JSON 객체로만 답하세요. "
                   '{"opinion":"환자 표현을 근거로 한 종합 소견 3~4문장","emergency":true,"depts":["진료과"],'
-                  '"keywords":["질환명에 들어갈 법한 한글 단어(예: 협심증, 추간판)"],"advice":"생활 안내 한 문장"}. '
-                  "depts는 최대 3개, keywords는 최대 10개. 응급 가능성이 있으면 emergency를 true로. "
-                  "진단이 아니라 병원을 찾기 위한 참고용이라는 점을 소견에 반영하세요.")
+                  '"keywords":["질환명에 들어갈 법한 한글 단어(예: 협심증, 추간판, 모야모야)"],"advice":"생활 안내 한 문장"}. '
+                  "depts는 최대 3개, keywords는 최대 10개. 흔한 질환뿐 아니라 증상과 맞는 희귀질환 이름도 일부 포함하세요. "
+                  "응급 가능성이 있으면 emergency를 true로. 진단이 아니라 병원을 찾기 위한 참고용이라는 점을 소견에 반영하세요.")
         ai = parse_json(call_ai(prompt))
     except Exception as e:  # noqa: BLE001
         err = str(e)[:250]
@@ -204,6 +259,16 @@ def analyze(region, text, sev, prefixes, depts):
         add(x, 0.5)
         if len(x) >= 3:
             add(x[:2], 0.5)  # '통증이' → '통증'
+
+    # 부위 분류 밖의 희귀질환도 후보에 들어오도록, AI 키워드로 질환명 전체 검색
+    extra = []
+    for k in [k for k in ai.get("keywords", []) if isinstance(k, str)][:6]:
+        try:
+            extra += name_search(k)
+        except Exception:  # noqa: BLE001
+            pass
+    if extra:
+        df = pd.concat([df, pd.DataFrame(extra, columns=["질환명", "상병코드"])]).drop_duplicates("상병코드").reset_index(drop=True)
     cand = candidates(df, kws)
 
     table = cand.head(6).assign(가능성="", 근거="")  # Gemini가 실패했을 때의 대체 결과
@@ -346,13 +411,14 @@ RED = ("의식", "경련", "발작", "호흡곤란", "숨을 못", "숨이 안",
 
 def go(name, code, depts=()):
     if not HOSPITAL_FILE.exists():
-        st.error("`pages/2_hospital_finder.py` 파일이 없어요. 병원 화면 파일을 teamProject/pages/ 폴더에 넣어 주세요.")
+        st.error("`pages/2_hospital_finder.py` 파일이 없어요. 병원 화면 파일을 pages/ 폴더에 넣어 주세요.")
         return
-    st.session_state["pick_disease"] = {"n": name, "c": code, "depts": list(depts)}
+    depts = list(depts) or ICD_DEPT.get(code[:1].upper(), ["내과"])
+    st.session_state["pick_disease"] = {"n": name, "c": code, "depts": depts}
     st.switch_page(HOSPITAL_PAGE)
 
 
-def show_detail(nm, cd, depts, level=None, reason=None):
+def show_detail(nm, cd, depts, level=None, reason=None, tag="a"):
     with st.container(border=True):
         st.markdown(f"#### {nm} · `{cd}`")
         if level or reason:
@@ -374,7 +440,7 @@ def show_detail(nm, cd, depts, level=None, reason=None):
             st.markdown("**개요**")
             st.write(ext)
             st.caption(f"출처: [위키백과]({url}) · 일반 정보이며 진단·치료를 대신하지 않아요.")
-        if st.button("📍 가까운 병원 · 지도 보기", type="primary", use_container_width=True, key=f"go_{cd}"):
+        if st.button("📍 가까운 병원 · 지도 보기", type="primary", use_container_width=True, key=f"go_{tag}_{cd}"):
             go(nm, cd, depts)
 
 
@@ -390,6 +456,35 @@ def row_html(i, nm, cd, level, reason):
     why = f'<div class="sub">{html.escape(reason)}</div>' if reason else ""
     return (f'<div class="rk"><span class="rn{" top" if i == 0 else ""}">{i + 1}</span>'
             f'<div><b>{html.escape(nm)}</b>{badge}<div class="sub">{html.escape(cd)}</div>{why}</div></div>')
+
+
+def disease_search(prefixes=None, depts=()):
+    """질환명 전체 검색(희귀질환 포함). 검색어가 없으면 선택한 부위의 질환 목록을 보여줘요."""
+    q = st.text_input("질환명 검색", placeholder="예) 협심증, 모야모야병, 루게릭", key="gs_q", label_visibility="collapsed")
+    try:
+        if q.strip():
+            if len(q.strip()) < 2:
+                st.caption("두 글자 이상 입력해 주세요.")
+                return
+            allv = pd.DataFrame(name_search(q.strip()), columns=["질환명", "상병코드"])
+            st.caption(f"'{q.strip()}' 검색 결과 {len(allv)}건 (부위와 상관없이 전체에서 찾았어요)")
+        elif prefixes:
+            allv = pd.DataFrame(icd_list(tuple(prefixes)), columns=["질환명", "상병코드"])
+            st.caption(f"선택한 부위의 질환 {len(allv)}건 · 다른 질환은 위에서 이름으로 검색하세요")
+        else:
+            st.caption("질환 이름의 일부만 입력해도 돼요. 희귀질환도 함께 검색돼요.")
+            return
+        if allv.empty:
+            st.info("검색 결과가 없어요. 다른 표기(띄어쓰기·한자어)로 다시 검색해 보세요.")
+            return
+        allv = allv.head(500).reset_index(drop=True)
+        ev = st.dataframe(allv, hide_index=True, use_container_width=True, height=300,
+                          on_select="rerun", selection_mode="single-row", key="allt")
+        if ev.selection.rows:
+            r = allv.iloc[ev.selection.rows[0]]
+            show_detail(r["질환명"], r["상병코드"], depts, tag="s")
+    except Exception as e:  # noqa: BLE001
+        st.warning(f"질환 목록을 불러오지 못했어요. ({e})")
 
 
 # ---------------------------------------------------------------
@@ -412,6 +507,8 @@ with right:
         st.write("")
         if st.button("🏥 병원 바로 찾기", use_container_width=True):
             st.switch_page(HOSPITAL_PAGE)
+        with st.expander("🔎 질환 이름으로 바로 찾기 (희귀질환 포함)", expanded=False):
+            disease_search()
     else:
         label, prefixes, depts = REGIONS[region]
         st.markdown(f'<div class="panel"><span class="rg">선택한 부위</span><div class="rgn">{label}</div></div>', unsafe_allow_html=True)
@@ -457,22 +554,10 @@ with right:
                             st.session_state["detail"] = (r["질환명"], r["상병코드"], _s(r["가능성"]), _s(r["근거"]))
                 dt = st.session_state.get("detail")
                 if dt and dt[1] in set(table["상병코드"]):
-                    show_detail(dt[0], dt[1], rdepts, dt[2], dt[3])
+                    show_detail(dt[0], dt[1], rdepts, dt[2], dt[3], tag="r")
 
-        with st.expander("📋 이 부위의 전체 질환 목록 (심평원 상병 데이터)"):
-            try:
-                allv = pd.DataFrame(icd_list(tuple(prefixes)), columns=["질환명", "상병코드"])
-                q = st.text_input("질환명 검색", placeholder="예) 협심증", label_visibility="collapsed")
-                if q.strip():
-                    allv = allv[allv["질환명"].str.contains(q.strip(), regex=False)]
-                allv = allv.head(300).reset_index(drop=True)
-                ev = st.dataframe(allv, hide_index=True, use_container_width=True, height=300,
-                                  on_select="rerun", selection_mode="single-row", key="allt")
-                if ev.selection.rows:
-                    r = allv.iloc[ev.selection.rows[0]]
-                    show_detail(r["질환명"], r["상병코드"], depts)
-            except Exception as e:  # noqa: BLE001
-                st.warning(f"질환 목록을 불러오지 못했어요. ({e})")
+        with st.expander("📋 질환 전체 목록 · 이름으로 검색 (희귀질환 포함)"):
+            disease_search(prefixes, depts)
 
 st.markdown('<div class="note">이 화면은 진단이 아니라 진료과와 병원을 찾기 위한 안내예요. AI 소견과 관련 질환은 입력한 설명을 바탕으로 한 추정이에요. '
             '증상이 계속되거나 심해지면 의료진과 상담하세요.</div>', unsafe_allow_html=True)

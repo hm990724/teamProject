@@ -29,6 +29,7 @@ def env(n):
 
 KAKAO, HIRA = env("KAKAO_REST_API_KEY"), env("HIRA_SERVICE_KEY")
 UA = {"User-Agent": "hospital-finder/1.0"}
+DEFAULT_LOC = {"lat": 37.5665, "lng": 126.9780, "label": "서울시청 (기본 위치)"}
 
 st.markdown("""<style>
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css");
@@ -77,6 +78,18 @@ def hav(a, b, c, d):
     p1, p2 = math.radians(a), math.radians(c)
     x = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(d - b) / 2) ** 2
     return 12742 * math.asin(math.sqrt(x))
+
+
+def dept_ok(name, depts):
+    """병원 이름에 '선택하지 않은 다른 진료과'가 들어 있으면 제외 (예: 이비인후과 선택 → ○○정형외과 제외)"""
+    allowed = set(depts)
+    if any(x.endswith("내과") for x in depts):
+        allowed.add("내과")
+    if any(x.endswith("외과") for x in depts):
+        allowed.add("외과")
+    found = [s for s in DEPT if s in name]
+    found = [s for s in found if not any(s != o and s in o for o in found)]  # '정형외과' 안의 '외과' 같은 중복 제거
+    return not found or any(s in allowed for s in found)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -176,12 +189,15 @@ def fetch_kakao(lat, lng, radius_km, code, query):
             for d in r.json().get("documents", [])]
 
 
-def build(rows, lat, lng, radius):
+def build(rows, lat, lng, radius, depts=()):
     df = pd.DataFrame(rows, columns=["name", "cl", "addr", "tel", "url", "lat", "lng", "doctors"])
     if df.empty:
         return df
+    df = df.drop_duplicates(["name", "lat", "lng"])
     df["dist"] = [hav(lat, lng, a, b) for a, b in zip(df["lat"], df["lng"])]
     df = df[df["dist"] <= radius].copy()
+    keep = [(c == "PH") or dept_ok(n, depts) for c, n in zip(df["cl"], df["name"])]  # 약국은 그대로, 병원만 진료과 필터
+    df = df[keep].copy()
     info = lambda c: PHARM if c == "PH" else CL.get(c, UNKNOWN)  # noqa: E731
     df["type"] = [info(c)[0] for c in df["cl"]]
     df["color"] = [info(c)[2] for c in df["cl"]]
@@ -248,13 +264,20 @@ if d:
     st.markdown(f"### {html.escape(d.get('n', ''))} <span style='color:#5E7186;font-size:.9rem'>상병코드 {html.escape(str(d.get('c', '')))}</span>",
                 unsafe_allow_html=True)
 
-# --- 위치 ---
+# --- 위치: 접속하면 현재 위치를 먼저 시도하고, 거부·실패하면 기본 위치 + 검색 ---
 if "loc" not in st.session_state and get_geolocation:
     g = get_geolocation(component_key=f"geo{st.session_state.get('geo_n', 0)}")
-    if g and isinstance(g, dict) and "coords" in g:
+    if isinstance(g, dict) and "coords" in g:
         st.session_state["loc"] = {"lat": g["coords"]["latitude"], "lng": g["coords"]["longitude"], "label": "내 위치"}
         st.rerun()
-loc = st.session_state.get("loc", {"lat": 37.5665, "lng": 126.9780, "label": "서울시청 (기본 위치)"})
+    elif isinstance(g, dict) and "error" in g:
+        st.session_state["loc"] = dict(DEFAULT_LOC)
+        st.warning("위치 권한이 거부돼서 기본 위치로 보여드려요. 브라우저 주소창의 위치 권한을 허용하거나 아래에서 주소를 검색해 주세요.")
+loc = st.session_state.get("loc")
+if loc is None:
+    if get_geolocation:
+        st.info("📍 현재 위치를 확인하는 중이에요. 브라우저에서 위치 권한을 '허용'해 주세요. (안 되면 아래에서 주소를 검색하세요)")
+    loc = {**DEFAULT_LOC, "label": "위치 확인 중 (임시: 서울시청)"}
 
 c1, c2, c3, c4 = st.columns([1.4, 1.4, 1.6, 0.4], vertical_alignment="bottom")
 with c1:
@@ -292,9 +315,11 @@ with st.spinner("주변 병원을 찾는 중... (심평원 서버가 느리면 1
             err, rows = errs[0], []
         elif errs:
             warn = f"심평원 조회 {njobs}건 중 {len(errs)}건이 실패해서 일부 병원이 빠졌을 수 있어요."
-    if (not HIRA or err) and KAKAO:  # 심평원을 못 쓰면 카카오로 대신
+    if (not HIRA or err) and KAKAO:  # 심평원을 못 쓰면 카카오로 대신 (선택한 진료과를 전부 검색)
         try:
-            rows = fetch_kakao(la, ln, radius, "HP8", f"{depts[0] if depts else ''} 병원".strip())
+            rows = []
+            for dn in (depts or [""]):
+                rows += fetch_kakao(la, ln, radius, "HP8", f"{dn} 병원".strip())
             if err:
                 warn = "심평원 서버가 응답하지 않아 카카오 데이터로 대신 보여드려요. 종별·의사 수 정보는 없어요."
                 err = ""
@@ -305,7 +330,7 @@ with st.spinner("주변 병원을 찾는 중... (심평원 서버가 느리면 1
             rows += fetch_kakao(la, ln, radius, "PM9", "약국")
         except Exception:  # noqa: BLE001
             warn = (warn + " " if warn else "") + "약국 정보를 불러오지 못했어요."
-df = build(rows, lat, lng, radius)
+df = build(rows, lat, lng, radius, tuple(depts))
 hosp = df[df["type"] != "약국"].reset_index(drop=True) if not df.empty else df
 if err:
     st.error(f"병원 데이터를 불러오지 못했어요: {err}")
@@ -335,7 +360,7 @@ with right:
                 st.markdown('<div class="empty">약국 정보는 KAKAO_REST_API_KEY가 있어야 나와요.</div>', unsafe_allow_html=True)
             for _, r in ph.iterrows():
                 st.markdown(card(r), unsafe_allow_html=True)
-        st.caption("진료과 필터는 심평원 진료과목 코드로 적용돼요. 순서는 직선거리 기준이고 공식 평가가 아니에요.")
+        st.caption("진료과 필터는 심평원 진료과목 코드와 병원 이름으로 적용돼요. 순서는 직선거리 기준이고 공식 평가가 아니에요.")
 
 
 # =========================================================
