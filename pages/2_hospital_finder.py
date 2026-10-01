@@ -1,0 +1,334 @@
+"""병원 찾기 — 진단된 질환·추천 진료과 기준으로 내 주변 병원을 지도와 순위로 보여줘요."""
+import html
+import json
+import math
+import os
+from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import quote, unquote
+
+import pandas as pd
+import requests
+import streamlit as st
+import streamlit.components.v1 as components
+from dotenv import load_dotenv
+
+try:
+    from streamlit_js_eval import get_geolocation
+except Exception:  # noqa: BLE001
+    get_geolocation = None
+
+load_dotenv()
+st.set_page_config(page_title="병원 찾기", page_icon="🏥", layout="wide", initial_sidebar_state="collapsed")
+
+
+def env(n):
+    v = (os.getenv(n) or "").strip().strip('"').strip("'").strip()
+    return unquote(v) if "%" in v else (v or None)
+
+
+KAKAO, HIRA = env("KAKAO_REST_API_KEY"), env("HIRA_SERVICE_KEY")
+UA = {"User-Agent": "hospital-finder/1.0"}
+
+st.markdown("""<style>
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css");
+html,body,.stApp,[class*="css"]{font-family:"Pretendard","Malgun Gothic",sans-serif!important;color:#0F2A43}
+.stApp{background:#F4F8FC}.block-container{max-width:1280px;padding-top:1rem}
+#MainMenu,footer{visibility:hidden}header[data-testid="stHeader"]{background:transparent}
+[data-testid="stSidebarNav"],[data-testid="collapsedControl"],[data-testid="stSidebar"]{display:none}
+.topbar{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid #DCE6F1;border-radius:16px;padding:14px 20px;margin-bottom:14px;box-shadow:0 2px 10px rgba(27,111,224,.06)}
+.logo{width:38px;height:38px;border-radius:11px;background:#1B6FE0;color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800}
+.topbar b{font-size:1.1rem}.topbar span{color:#5E7186;font-size:.86rem;margin-left:8px}
+.chip{display:inline-block;padding:4px 12px;border-radius:999px;font-size:.82rem;font-weight:600;background:#E8F1FD;color:#1B6FE0;margin:0 6px 6px 0}
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:6px 0 12px}
+.kpi{background:#fff;border:1px solid #DCE6F1;border-radius:14px;padding:12px 14px}
+.kpi .k{font-size:.74rem;color:#5E7186;font-weight:600}.kpi .n{font-size:1.2rem;font-weight:800;margin-top:2px}
+.hc{background:#fff;border:1px solid #DCE6F1;border-radius:14px;padding:14px 16px;margin-bottom:10px;box-shadow:0 1px 6px rgba(15,42,67,.04)}
+.hc-top{display:flex;gap:12px;align-items:flex-start}
+.badge{flex:0 0 32px;height:32px;border-radius:10px;background:#0F2A43;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.9rem}
+.badge.top{background:#1B6FE0}
+.hc-name{font-weight:700;line-height:1.35}.hc-meta{font-size:.82rem;color:#5E7186;margin-top:3px}
+.tag{display:inline-block;font-size:.72rem;font-weight:700;padding:2px 9px;border-radius:999px;margin-right:6px;color:#fff}
+.hc-dist{margin-left:auto;text-align:right;font-weight:800;white-space:nowrap}.hc-dist small{display:block;font-weight:500;color:#5E7186;font-size:.72rem}
+.bar{height:6px;border-radius:99px;background:#EAF0F7;margin:10px 0 3px;overflow:hidden}.bar>span{display:block;height:100%;background:linear-gradient(90deg,#4F9BFF,#1B6FE0);border-radius:99px}
+.links{margin-top:9px;display:flex;gap:8px;flex-wrap:wrap}
+.links a{font-size:.8rem;font-weight:600;color:#1B6FE0;text-decoration:none;border:1px solid #DCE6F1;padding:4px 11px;border-radius:999px}
+.empty{background:#fff;border:1px dashed #BFD0E3;border-radius:14px;padding:26px;text-align:center;color:#5E7186;line-height:1.7}
+.stButton>button{border-radius:12px}
+@media(max-width:760px){.kpis{grid-template-columns:1fr}}
+</style>""", unsafe_allow_html=True)
+
+# 진료과 → 심평원 진료과목 코드(dgsbjtCd)
+DEPT = {"내과": "01", "신경과": "02", "정신건강의학과": "03", "외과": "04", "정형외과": "05", "신경외과": "06", "흉부외과": "07",
+        "성형외과": "08", "마취통증의학과": "09", "산부인과": "10", "소아청소년과": "11", "안과": "12", "이비인후과": "13",
+        "피부과": "14", "비뇨의학과": "15", "영상의학과": "16", "재활의학과": "21", "가정의학과": "23", "응급의학과": "24"}
+CL = {"01": ("상급종합", 40, "#1B6FE0"), "11": ("종합병원", 30, "#0E9F8E"), "21": ("병원", 20, "#F59E0B"), "31": ("의원", 10, "#8B5CF6")}
+PHARM = ("약국", 0, "#EC4899")
+
+
+def dept_code(name):
+    if name in DEPT:
+        return DEPT[name]
+    return "01" if name.endswith("내과") else "04" if name.endswith("외과") else None
+
+
+def hav(a, b, c, d):
+    p1, p2 = math.radians(a), math.radians(c)
+    x = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(d - b) / 2) ** 2
+    return 12742 * math.asin(math.sqrt(x))
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def place_search(q):
+    out = []
+    if KAKAO:
+        h = {"Authorization": f"KakaoAK {KAKAO}"}
+        for ep in ("address", "keyword"):
+            try:
+                r = requests.get(f"https://dapi.kakao.com/v2/local/search/{ep}.json", headers=h, params={"query": q, "size": 5}, timeout=8)
+                for d in r.json().get("documents", []):
+                    lb = d.get("place_name") or d.get("address_name")
+                    sub = d.get("address_name", "")
+                    out.append({"label": f"{lb} · {sub}" if d.get("place_name") else lb, "lat": float(d["y"]), "lng": float(d["x"])})
+            except Exception:  # noqa: BLE001
+                continue
+    if not out and len(q) >= 3:
+        try:
+            r = requests.get("https://nominatim.openstreetmap.org/search", headers=UA, timeout=8,
+                             params={"q": q, "format": "json", "limit": 5, "accept-language": "ko"})
+            out = [{"label": d["display_name"][:70], "lat": float(d["lat"]), "lng": float(d["lon"])} for d in r.json()]
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_hira(lat, lng, radius_km, dcodes):
+    """심평원 병원정보서비스: 종별(상급·종합·병원·의원) × 진료과목 코드로 주변 병원 조회."""
+    def one(args):
+        cl, dc = args
+        p = {"serviceKey": HIRA, "xPos": lng, "yPos": lat, "radius": int(radius_km * 1000), "clCd": cl,
+             "numOfRows": 100, "pageNo": 1, "_type": "json"}
+        if dc:
+            p["dgsbjtCd"] = dc
+        r = requests.get("https://apis.data.go.kr/B551182/hospInfoServicev2/getHospBasisList", params=p, timeout=15)
+        try:
+            items = r.json()["response"]["body"]["items"]
+            items = items.get("item", []) if items else []
+        except Exception:
+            raise RuntimeError(f"심평원 응답 오류 HTTP {r.status_code}: {r.text[:140]}")
+        return cl, ([items] if isinstance(items, dict) else items)
+
+    rows = {}
+    with ThreadPoolExecutor(6) as ex:
+        for cl, items in ex.map(one, [(c, d) for c in CL for d in (dcodes or (None,))]):
+            for it in items:
+                try:
+                    rows[it["ykiho"]] = {"name": it.get("yadmNm", ""), "cl": cl, "addr": it.get("addr", ""), "tel": it.get("telno", ""),
+                                         "url": it.get("hospUrl", ""), "lat": float(it["YPos"]), "lng": float(it["XPos"]),
+                                         "doctors": float(it["drTotCnt"]) if it.get("drTotCnt") else 0.0}
+                except (KeyError, ValueError):
+                    continue
+    return list(rows.values())
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_kakao(lat, lng, radius_km, code, query):
+    """카카오 로컬: 병원(HP8) 또는 약국(PM9)."""
+    r = requests.get("https://dapi.kakao.com/v2/local/search/keyword.json", timeout=10, headers={"Authorization": f"KakaoAK {KAKAO}"},
+                     params={"query": query, "x": lng, "y": lat, "radius": min(int(radius_km * 1000), 20000), "sort": "distance",
+                             "size": 15, "category_group_code": code})
+    return [{"name": d["place_name"], "cl": "PH" if code == "PM9" else "21", "addr": d.get("road_address_name") or d.get("address_name", ""),
+             "tel": d.get("phone", ""), "url": d.get("place_url", ""), "lat": float(d["y"]), "lng": float(d["x"]), "doctors": 0.0}
+            for d in r.json().get("documents", [])]
+
+
+def build(rows, lat, lng, radius):
+    df = pd.DataFrame(rows, columns=["name", "cl", "addr", "tel", "url", "lat", "lng", "doctors"])
+    if df.empty:
+        return df
+    df["dist"] = [hav(lat, lng, a, b) for a, b in zip(df["lat"], df["lng"])]
+    df = df[df["dist"] <= radius].copy()
+    info = lambda c: PHARM if c == "PH" else CL.get(c, CL["21"])  # noqa: E731
+    df["type"] = [info(c)[0] for c in df["cl"]]
+    df["color"] = [info(c)[2] for c in df["cl"]]
+    raw = pd.Series([info(c)[1] for c in df["cl"]], index=df.index) + (df["doctors"] / 15).clip(upper=10) + (25 - (df["dist"] * 1.2).clip(upper=25))
+    df["score"] = (raw / 75 * 100).clip(1, 99).round().astype(int)
+    return df.sort_values(["score", "dist"], ascending=[False, True]).reset_index(drop=True)
+
+
+def card(r, rank=None):
+    badge = (f'<div class="badge{" top" if rank and rank <= 3 else ""}">{rank}</div>' if rank else
+             f'<div class="badge" style="background:{r["color"]}">+</div>')
+    bar = (f'<div class="bar"><span style="width:{r["score"]}%"></span></div><div class="hc-meta">추천 지수 {r["score"]}점'
+           + (f' · 의사 {int(r["doctors"])}명' if r["doctors"] else "") + "</div>") if rank else ""
+    links = (f'<a href="tel:{html.escape(r["tel"])}">📞 전화</a>' if r["tel"] else "")
+    links += f'<a target="_blank" href="https://map.kakao.com/link/to/{quote(r["name"])},{r["lat"]},{r["lng"]}">🧭 길찾기</a>'
+    if r["url"]:
+        links += f'<a target="_blank" href="{html.escape(r["url"])}">상세</a>'
+    return (f'<div class="hc"><div class="hc-top">{badge}<div style="min-width:0"><div class="hc-name">{html.escape(r["name"])}</div>'
+            f'<div class="hc-meta"><span class="tag" style="background:{r["color"]}">{r["type"]}</span>{html.escape(r["addr"])}</div></div>'
+            f'<div class="hc-dist">{r["dist"]:.1f} km<small>직선거리</small></div></div>{bar}<div class="links">{links}</div></div>')
+
+
+MAP_JS = r"""
+const D=__DATA__;const msg=t=>{const e=document.getElementById('msg');e.style.display='block';e.textContent=t;};
+function loadJs(u,cb,i){i=i||0;if(i>=u.length){msg('지도 라이브러리를 불러오지 못했어요. cdnjs/jsdelivr/unpkg 접근을 확인해 주세요.');return;}
+const s=document.createElement('script');s.src=u[i];s.onload=cb;s.onerror=()=>loadJs(u,cb,i+1);document.head.appendChild(s);}
+const l=document.createElement('link');l.rel='stylesheet';l.href='https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css';document.head.appendChild(l);
+loadJs(['https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js','https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js','https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'],start);
+function start(){try{start2();}catch(e){msg('지도 오류: '+e.message);}}
+function start2(){const map=L.map('m');map.fitBounds(L.latLng(D.c[0],D.c[1]).toBounds(D.r*2000));
+ const T=[['https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png','© OpenStreetMap © CARTO'],['https://tile.openstreetmap.org/{z}/{x}/{y}.png','© OpenStreetMap']];
+ let ti=0,er=0,ly=null;function use(){if(ly)map.removeLayer(ly);if(ti>=T.length){msg('지도 타일 서버에 접속하지 못했어요.');return;}
+  ly=L.tileLayer(T[ti][0],{maxZoom:19,attribution:T[ti][1],subdomains:'abcd'}).addTo(map);er=0;ly.on('tileerror',()=>{if(++er===3){ti++;use();}});}use();
+ L.circle(D.c,{radius:D.r*1000,color:'#1B6FE0',weight:1,fillOpacity:.04}).addTo(map);
+ L.circleMarker(D.c,{radius:8,color:'#fff',weight:3,fillColor:'#0F2A43',fillOpacity:1}).addTo(map).bindTooltip('내 위치');
+ D.p.forEach(p=>{const top=p.rank&&p.rank<=5,s=top?26:14;
+  const ic=L.divIcon({className:'',iconSize:[s,s],iconAnchor:[s/2,s/2],html:'<div style="width:'+s+'px;height:'+s+'px;border-radius:50%;background:'+p.color+';border:2px solid #fff;color:#fff;font:700 13px/'+(s-4)+'px sans-serif;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.35)">'+(top?p.rank:'')+'</div>'});
+  L.marker([p.lat,p.lng],{icon:ic}).addTo(map).bindPopup(p.html);});
+ setTimeout(()=>map.invalidateSize(),300);}
+"""
+
+
+def map_html(center, radius, df):
+    pts = []
+    for i, r in df.iterrows():
+        rank = i + 1 if r["type"] != "약국" else None
+        pts.append({"lat": r["lat"], "lng": r["lng"], "color": r["color"], "rank": rank,
+                    "html": f'<b>{html.escape(r["name"])}</b><br>{r["type"]} · {r["dist"]:.1f}km<br>{html.escape(r["addr"])}'})
+    data = json.dumps({"c": center, "r": radius, "p": pts[:120]}, ensure_ascii=False).replace("</", "<\\/")
+    css = ("html,body,#m{height:100%;margin:0}#msg{position:absolute;left:10px;bottom:10px;z-index:9999;background:#fff;color:#b42318;"
+           "padding:8px 12px;border-radius:8px;font:13px sans-serif;box-shadow:0 1px 6px rgba(0,0,0,.25);display:none;max-width:80%}")
+    return (f'<html><head><meta charset="utf-8"><style>{css}</style></head><body><div id="m"></div><div id="msg"></div>'
+            f'<script>{MAP_JS.replace("__DATA__", data)}</script></body></html>')
+
+
+# ---------------------------------------------------------------
+d = st.session_state.get("pick_disease") or {}
+st.markdown('<div class="topbar"><div class="logo">✚</div><div><b>병원 찾기</b>'
+            '<span>추천 진료과 기준으로 내 주변 병원을 지도와 순위로 보여드려요</span></div></div>', unsafe_allow_html=True)
+st.page_link("main.py", label="← 증상 다시 선택", icon="🧍")
+
+if not (HIRA or KAKAO):
+    st.error("`.env`에 HIRA_SERVICE_KEY 또는 KAKAO_REST_API_KEY가 필요해요. (키 이름과 따옴표를 확인해 주세요)")
+    st.stop()
+
+if d:
+    st.markdown(f"### {html.escape(d.get('n', ''))} <span style='color:#5E7186;font-size:.9rem'>상병코드 {html.escape(str(d.get('c', '')))}</span>",
+                unsafe_allow_html=True)
+
+# --- 위치 ---
+if "loc" not in st.session_state and get_geolocation:
+    g = get_geolocation(component_key=f"geo{st.session_state.get('geo_n', 0)}")
+    if g and isinstance(g, dict) and "coords" in g:
+        st.session_state["loc"] = {"lat": g["coords"]["latitude"], "lng": g["coords"]["longitude"], "label": "내 위치"}
+        st.rerun()
+loc = st.session_state.get("loc", {"lat": 37.5665, "lng": 126.9780, "label": "서울시청 (기본 위치)"})
+
+c1, c2, c3, c4 = st.columns([1.4, 1.4, 1.6, 0.4], vertical_alignment="bottom")
+with c1:
+    q = st.text_input("지역 · 주소 검색", placeholder=f"현재: {loc['label']}")
+with c2:
+    found = place_search(q.strip()) if len(q.strip()) >= 2 else []
+    sel = st.selectbox("검색 결과", [f["label"] for f in found], index=None, placeholder="결과에서 선택") if found else None
+    if sel:
+        pick = next(f for f in found if f["label"] == sel)
+        if pick["label"] != loc["label"]:
+            st.session_state["loc"] = pick
+            st.rerun()
+with c3:
+    default = [x for x in d.get("depts", []) if x in DEPT or x.endswith(("내과", "외과"))] or ["내과"]
+    depts = st.multiselect("진료과", sorted(set(list(DEPT) + default + [x for x in d.get("depts", []) if dept_code(x)])), default=default)
+with c4:
+    if st.button("📍", help="내 위치로 이동", use_container_width=True):
+        st.session_state.pop("loc", None)
+        st.session_state["geo_n"] = st.session_state.get("geo_n", 0) + 1
+        st.rerun()
+radius = st.pills("검색 반경", [3, 5, 10, 20, 30], format_func=lambda x: f"{x}km", default=10, selection_mode="single") or 10
+
+lat, lng = loc["lat"], loc["lng"]
+st.caption(f"📍 {loc['label']} 기준")
+if d.get("depts"):
+    st.markdown("**추천 진료과** &nbsp;" + "".join(f'<span class="chip">{html.escape(x)}</span>' for x in d["depts"]), unsafe_allow_html=True)
+
+err, rows = "", []
+with st.spinner("주변 병원을 찾는 중..."):
+    try:
+        codes = tuple(sorted({dept_code(x) for x in depts if dept_code(x)}))
+        if HIRA:
+            rows = fetch_hira(round(lat, 4), round(lng, 4), radius, codes)
+        elif KAKAO:
+            rows = fetch_kakao(round(lat, 4), round(lng, 4), radius, "HP8", f"{depts[0] if depts else ''} 병원".strip())
+        if KAKAO:
+            rows += fetch_kakao(round(lat, 4), round(lng, 4), radius, "PM9", "약국")
+    except Exception as e:  # noqa: BLE001
+        err = str(e)[:200]
+df = build(rows, lat, lng, radius)
+hosp = df[df["type"] != "약국"].reset_index(drop=True) if not df.empty else df
+if err:
+    st.error(f"병원 데이터를 불러오지 못했어요: {err}")
+
+left, right = st.columns([1.5, 1], gap="large")
+with left:
+    components.html(map_html([lat, lng], radius, pd.concat([hosp.head(60), df[df["type"] == "약국"].head(20)]) if not df.empty else df),
+                    height=640)
+    st.caption("지도의 숫자는 추천 순위 상위 5곳이에요. 점을 누르면 상세가 보여요.")
+with right:
+    if hosp.empty:
+        st.markdown('<div class="empty"><b>반경 안에서 병원을 찾지 못했어요</b><br>반경을 넓히거나 진료과를 바꿔 보세요.</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="kpis"><div class="kpi"><div class="k">병원</div><div class="n">{len(hosp)}곳</div></div>'
+                    f'<div class="kpi"><div class="k">가장 가까운 곳</div><div class="n">{hosp["dist"].min():.1f}km</div></div>'
+                    f'<div class="kpi"><div class="k">추천 1위</div><div class="n" style="font-size:.95rem">{html.escape(hosp.loc[0, "name"])}</div></div></div>',
+                    unsafe_allow_html=True)
+        t1, t2, t3 = st.tabs(["추천순", "가까운순", "약국"])
+        with t1, st.container(height=520, border=False):
+            for i, r in hosp.head(10).iterrows():
+                st.markdown(card(r, i + 1), unsafe_allow_html=True)
+        with t2, st.container(height=520, border=False):
+            for _, r in hosp.sort_values("dist").head(12).iterrows():
+                st.markdown(card(r), unsafe_allow_html=True)
+        with t3, st.container(height=520, border=False):
+            ph = df[df["type"] == "약국"].sort_values("dist").head(12)
+            if ph.empty:
+                st.markdown('<div class="empty">약국 정보는 KAKAO_REST_API_KEY가 있어야 나와요.</div>', unsafe_allow_html=True)
+            for _, r in ph.iterrows():
+                st.markdown(card(r), unsafe_allow_html=True)
+        with st.expander("추천 지수는 어떻게 계산되나요?"):
+            st.markdown("- 기관 종별(상급종합 > 종합병원 > 병원 > 의원) 최대 40점\n- 의사 수(심평원 제공) 최대 10점\n- 거리 가까울수록 최대 25점\n\n"
+                        "진료과 필터는 심평원 진료과목 코드로 적용돼요. 공식 평가가 아니라 공개 데이터를 합산한 참고 점수예요.")
+
+
+# =========================================================
+# 주변 병원 데이터 분석 (pandas)
+# =========================================================
+if not hosp.empty:
+    st.markdown("### 📊 주변 병원 데이터 분석")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("병원 수", f"{len(hosp)}곳")
+    m2.metric("평균 거리", f"{hosp['dist'].mean():.1f}km")
+    m3.metric("상급·종합병원", f"{int(hosp['type'].isin(['상급종합', '종합병원']).sum())}곳")
+    m4.metric("의사 수 합계", f"{int(hosp['doctors'].sum()):,}명" if hosp["doctors"].sum() else "자료 없음")
+
+    ca, cb = st.columns(2)
+    with ca:
+        st.markdown("**종별 병원 수**")
+        by_type = hosp["type"].value_counts().reindex(["상급종합", "종합병원", "병원", "의원"]).fillna(0).astype(int)
+        st.bar_chart(by_type.rename("병원 수"), color="#1B6FE0")
+    with cb:
+        st.markdown("**거리별 병원 수**")
+        band = pd.cut(hosp["dist"], bins=[0, 1, 3, 5, 10, 20, 30], labels=["1km 이내", "1~3km", "3~5km", "5~10km", "10~20km", "20~30km"],
+                      include_lowest=True)
+        by_dist = band.value_counts().sort_index()
+        by_dist.index = by_dist.index.astype(str)
+        st.bar_chart(by_dist.rename("병원 수"), color="#0E9F8E")
+
+    st.markdown("**추천 순위표**")
+    tbl = hosp.head(15)[["name", "type", "dist", "doctors", "score", "addr"]].rename(
+        columns={"name": "병원", "type": "종별", "dist": "거리", "doctors": "의사 수", "score": "추천 지수", "addr": "주소"})
+    tbl.insert(0, "순위", range(1, len(tbl) + 1))
+    st.dataframe(tbl, hide_index=True, use_container_width=True, column_config={
+        "추천 지수": st.column_config.ProgressColumn("추천 지수", min_value=0, max_value=100, format="%d점"),
+        "거리": st.column_config.NumberColumn("거리(km)", format="%.1f"),
+        "의사 수": st.column_config.NumberColumn("의사 수", format="%d명"),
+    })

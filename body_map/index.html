@@ -1,0 +1,182 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        background: transparent;
+        font-family: Pretendard, "Malgun Gothic", sans-serif;
+      }
+      .bar {
+        display: flex;
+        gap: 6px;
+        justify-content: center;
+        flex-wrap: wrap;
+        margin: 0 0 4px;
+      }
+      .bar button {
+        padding: 7px 14px;
+        border-radius: 999px;
+        border: 1px solid #cbd6dd;
+        background: #fff;
+        cursor: pointer;
+        font-size: 13px;
+        color: #12263a;
+      }
+      .bar button:hover {
+        border-color: #0f766e;
+      }
+      .bar button.on {
+        background: #0f766e;
+        color: #fff;
+        border-color: #0f766e;
+      }
+      #m {
+        display: flex;
+        justify-content: center;
+      }
+      .rbh polygon {
+        cursor: pointer;
+        transition: fill 0.15s;
+      }
+      .rbh polygon:hover {
+        fill: #5fbfb3 !important;
+      }
+      #tip {
+        text-align: center;
+        font-size: 13px;
+        color: #5b6b7b;
+        margin-top: 4px;
+        min-height: 18px;
+      }
+      #msg {
+        text-align: center;
+        font-size: 13px;
+        color: #b42318;
+        padding: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="bar">
+      <button id="front">앞면</button><button id="back">뒷면</button
+      ><button id="whole">전신 · 피부 · 정신</button>
+    </div>
+    <div id="m"></div>
+    <div id="tip"></div>
+    <div id="msg"></div>
+    <script type="module">
+      // 오픈소스 body-highlighter (npm) 의 인체 SVG를 그대로 가져다 씁니다.
+      const MAP = {
+        head: "head",
+        neck: "neck",
+        trapezius: "neck",
+        "front-deltoids": "shoulder",
+        "back-deltoids": "shoulder",
+        chest: "chest",
+        biceps: "arm",
+        triceps: "arm",
+        forearm: "hand",
+        abs: "abdomen",
+        obliques: "flank",
+        adductor: "pelvis",
+        abductors: "hip",
+        gluteal: "hip",
+        "upper-back": "upper_back",
+        "lower-back": "lower_back",
+        quadriceps: "thigh",
+        hamstring: "thigh",
+        calves: "calf",
+      };
+      const NAME = {
+        head: "머리 · 얼굴",
+        neck: "목 · 갑상선",
+        shoulder: "어깨",
+        chest: "가슴 · 심장 · 폐",
+        arm: "팔 · 팔꿈치",
+        hand: "아래팔 · 손목 · 손",
+        abdomen: "배 · 소화기",
+        flank: "옆구리",
+        pelvis: "골반 · 사타구니",
+        hip: "엉덩이 · 고관절",
+        upper_back: "등",
+        lower_back: "허리",
+        thigh: "허벅지 · 무릎",
+        calf: "종아리 · 발",
+        whole: "전신 · 피부 · 정신",
+      };
+      const $ = (id) => document.getElementById(id);
+      let A = { sel: null, side: "anterior" },
+        hl = null,
+        create = null;
+
+      function draw() {
+        $("front").className = A.side === "anterior" ? "on" : "";
+        $("back").className = A.side === "posterior" ? "on" : "";
+        $("whole").className = A.sel === "whole" ? "on" : "";
+        $("tip").textContent = A.sel
+          ? "선택: " + NAME[A.sel]
+          : "불편한 부위를 눌러 보세요";
+        if (!create) return;
+        const ms = Object.keys(MAP).filter((k) => A.sel && MAP[k] === A.sel);
+        if (hl) hl.destroy();
+        hl = create({
+          container: $("m"),
+          type: A.side,
+          bodyColor: "#D5DCE2",
+          highlightedColors: ["#0F766E"],
+          data: ms.length ? [{ name: "sel", muscles: ms }] : [],
+          svgStyle: { height: "500px", width: "auto" },
+          onClick: ({ muscle }) => {
+            const id = MAP[muscle];
+            if (id) pick(id);
+          },
+        });
+      }
+      function send(type, data) {
+        window.parent.postMessage(
+          Object.assign({ isStreamlitMessage: true, type }, data),
+          "*",
+        );
+      }
+      function pick(id) {
+        A.sel = id;
+        draw();
+        send("streamlit:setComponentValue", {
+          value: { region: id, t: Date.now() },
+          dataType: "json",
+        });
+      }
+
+      $("front").onclick = () => {
+        A.side = "anterior";
+        draw();
+      };
+      $("back").onclick = () => {
+        A.side = "posterior";
+        draw();
+      };
+      $("whole").onclick = () => pick("whole");
+      window.addEventListener("message", (e) => {
+        if (e.data && e.data.type === "streamlit:render") {
+          A.sel = (e.data.args || {}).sel || null;
+          draw();
+          send("streamlit:setFrameHeight", { height: 590 });
+        }
+      });
+
+      try {
+        const mod =
+          await import("https://cdn.jsdelivr.net/npm/body-highlighter/+esm");
+        create = mod.default || mod.createBodyHighlighter;
+      } catch (err) {
+        $("msg").textContent =
+          "인체 그림 라이브러리를 불러오지 못했어요. 인터넷 연결(cdn.jsdelivr.net)을 확인해 주세요.";
+      }
+      send("streamlit:componentReady", { apiVersion: 1 });
+      draw();
+      send("streamlit:setFrameHeight", { height: 590 });
+    </script>
+  </body>
+</html>
