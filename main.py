@@ -1,12 +1,15 @@
-"""어디가 불편하신가요? — 몸 그림 → 증상 입력 → AI 소견 + pandas 일치도 → 주변 병원·지도
+"""어디가 불편하신가요? — 몸 그림 → 증상 입력 → AI 소견 + 관련 질환 추정 → 질환 통계(pandas) → 주변 병원·지도
 실행: streamlit run main.py
 .env: HIRA_DISEASE_SERVICE_KEY, GEMINI_API_KEY(무료 AI 분석용), (병원 화면용) KAKAO_REST_API_KEY, HIRA_SERVICE_KEY
+통계는 파일 없이 심평원 질병정보서비스 API(HIRA_DISEASE_SERVICE_KEY)로 조회해요.
 """
 import html
 import json
 import math
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -53,68 +56,34 @@ html,body,.stApp,[class*="css"]{font-family:"Pretendard","Malgun Gothic",sans-se
 .panel{background:#fff;border:1px solid #DCE6F1;border-radius:16px;padding:16px 20px;margin-bottom:10px}
 .rg{font-size:.75rem;color:#5E7186;font-weight:600}.rgn{font-size:1.35rem;font-weight:800;letter-spacing:-.02em}
 .chip{display:inline-block;padding:4px 12px;border-radius:999px;font-size:.85rem;font-weight:600;background:#E8F1FD;color:#1B6FE0;margin:0 6px 6px 0}
-.rk{display:flex;gap:10px;align-items:center}.rk b{font-size:.95rem}
+.rk{display:flex;gap:10px;align-items:flex-start}.rk b{font-size:.95rem}
 .rn{flex:0 0 28px;height:28px;border-radius:9px;background:#0F2A43;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.85rem}
 .rn.top{background:#1B6FE0}
+.lv{font-size:.72rem;font-weight:700;padding:2px 9px;border-radius:999px;color:#fff;margin-left:6px;vertical-align:middle}
+.lv.h{background:#1B6FE0}.lv.m{background:#0E9F8E}.lv.l{background:#94A3B8}
 .sub{font-size:.78rem;color:#5E7186}
-.g{height:10px;border-radius:99px;background:#EAF0F7;overflow:hidden}
-.g>span{display:block;height:100%;background:linear-gradient(90deg,#4F9BFF,#1B6FE0);border-radius:99px}
-.gl{font-size:.8rem;font-weight:800;color:#1B6FE0;margin-top:2px}
 .note{font-size:.78rem;color:#5E7186;margin-top:10px}
 .stButton>button{border-radius:12px}
 </style>""", unsafe_allow_html=True)
 
-# 부위 → (이름, ICD-10 분류, 참고 진료과, 빠른 선택 증상[(증상, 응급여부)]). 화면 구성용 설정이며 의사 검수가 필요합니다.
+# 부위 → (이름, ICD-10 분류 접두어, 참고 진료과). 화면 구성용 설정이며 의사 검수가 필요합니다.
 REGIONS = {
-    "head": ("머리 · 얼굴", ["G", "I6", "H", "J3"], ["신경과", "신경외과", "안과", "이비인후과"],
-             [("두통", False), ("어지럼증", False), ("경련 · 발작", True), ("의식이 흐려짐", True),
-              ("한쪽 팔다리에 힘이 빠지거나 말이 어눌함", True), ("시력 저하 · 이중으로 보임", False), ("눈 통증 · 충혈", False),
-              ("이명 · 난청", False), ("코막힘 · 콧물", False), ("얼굴 한쪽이 처짐", True)]),
-    "neck": ("목 · 갑상선", ["E0"], ["이비인후과", "내분비내과"],
-             [("목에 덩어리가 만져짐", False), ("목소리 변화", False), ("삼킴 곤란", False), ("목 통증", False), ("체중 변화 · 더위를 탐", False)]),
-    "shoulder": ("어깨", ["M"], ["정형외과", "재활의학과"],
-                 [("어깨 통증", False), ("팔을 들기 힘듦", False), ("어깨가 빠지는 느낌", False), ("팔 저림", False)]),
-    "chest": ("가슴 · 심장 · 폐", ["I", "J"], ["순환기내과", "호흡기내과"],
-              [("가슴 통증 · 압박감", True), ("숨쉬기 힘듦", True), ("기침이 오래감", False), ("가래 · 쌕쌕거림", False), ("두근거림", False)]),
-    "arm": ("팔 · 팔꿈치", ["M", "G5"], ["정형외과", "재활의학과", "신경과"],
-            [("관절 통증", False), ("저림", False), ("근력 저하", False), ("붓기", False)]),
-    "hand": ("아래팔 · 손목 · 손", ["M", "G5"], ["정형외과", "재활의학과", "신경과"],
-             [("손목 통증", False), ("손 저림", False), ("손 떨림", False), ("손가락 뻣뻣함 · 변형", False)]),
-    "abdomen": ("배 · 소화기", ["K"], ["소화기내과", "외과"],
-                [("배가 아픔", False), ("구토 · 메스꺼움", False), ("설사", False), ("변비", False),
-                 ("피가 섞인 변 · 검은 변", True), ("이유 없는 체중 감소", False), ("눈이나 피부가 노래짐", False)]),
-    "flank": ("옆구리", ["N2", "K8", "N1"], ["비뇨의학과", "소화기내과"],
-              [("옆구리 통증", False), ("소변에 피가 섞임", False), ("열 · 오한", False), ("구토 · 메스꺼움", False)]),
-    "pelvis": ("골반 · 사타구니 · 생식", ["N"], ["비뇨의학과", "산부인과"],
-               [("소변 볼 때 통증", False), ("소변 횟수 변화", False), ("소변에 피가 섞임", False), ("골반 통증", False), ("생리 이상", False)]),
-    "hip": ("엉덩이 · 고관절", ["M", "K6"], ["정형외과", "대장항문외과"],
-            [("엉덩이 통증", False), ("걸을 때 고관절 통증", False), ("항문 통증 · 출혈", False), ("앉기 힘듦", False)]),
-    "upper_back": ("등", ["M", "J"], ["정형외과", "재활의학과", "호흡기내과"],
-                   [("등 통증", False), ("숨 쉴 때 등이 아픔", False), ("어깨뼈 사이가 뻐근함", False), ("등이 굽음", False)]),
-    "lower_back": ("허리", ["M", "N2"], ["정형외과", "신경외과", "재활의학과"],
-                   [("허리 통증", False), ("다리로 뻗치는 통증", False), ("허리를 굽히기 힘듦", False), ("다리 힘 빠짐 + 대소변 이상", True)]),
-    "thigh": ("허벅지 · 무릎", ["M", "I8"], ["정형외과", "재활의학과", "혈관외과"],
-              [("무릎 통증", False), ("걷기 어려움", False), ("허벅지 통증", False), ("무릎이 붓거나 물이 참", False)]),
-    "calf": ("종아리 · 발", ["M", "I8", "E1"], ["정형외과", "혈관외과", "내분비내과"],
-             [("종아리 통증 · 쥐", False), ("발 · 발뒤꿈치 통증", False), ("다리 붓기", False),
-              ("한쪽 다리만 붓고 아픔", True), ("발 저림 · 감각 저하", False)]),
-    "whole": ("전신 · 피부 · 정신", ["D", "E", "L", "F"], ["가정의학과", "피부과", "정신건강의학과"],
-              [("심한 피로", False), ("열이 오래감", False), ("피부 발진 · 가려움", False), ("멍이 잘 듦 · 출혈이 안 멎음", True),
-               ("우울 · 불안", False), ("잠을 못 잠", False)]),
+    "head": ("머리 · 얼굴", ["G", "I6", "H", "J3"], ["신경과", "신경외과", "안과", "이비인후과"]),
+    "neck": ("목 · 갑상선", ["E0"], ["이비인후과", "내분비내과"]),
+    "shoulder": ("어깨", ["M"], ["정형외과", "재활의학과"]),
+    "chest": ("가슴 · 심장 · 폐", ["I", "J"], ["순환기내과", "호흡기내과"]),
+    "arm": ("팔 · 팔꿈치", ["M", "G5"], ["정형외과", "재활의학과", "신경과"]),
+    "hand": ("아래팔 · 손목 · 손", ["M", "G5"], ["정형외과", "재활의학과", "신경과"]),
+    "abdomen": ("배 · 소화기", ["K"], ["소화기내과", "외과"]),
+    "flank": ("옆구리", ["N2", "K8", "N1"], ["비뇨의학과", "소화기내과"]),
+    "pelvis": ("골반 · 사타구니 · 생식", ["N"], ["비뇨의학과", "산부인과"]),
+    "hip": ("엉덩이 · 고관절", ["M", "K6"], ["정형외과", "대장항문외과"]),
+    "upper_back": ("등", ["M", "J"], ["정형외과", "재활의학과", "호흡기내과"]),
+    "lower_back": ("허리", ["M", "N2"], ["정형외과", "신경외과", "재활의학과"]),
+    "thigh": ("허벅지 · 무릎", ["M", "I8"], ["정형외과", "재활의학과", "혈관외과"]),
+    "calf": ("종아리 · 발", ["M", "I8", "E1"], ["정형외과", "혈관외과", "내분비내과"]),
+    "whole": ("전신 · 피부 · 정신", ["D", "E", "L", "F"], ["가정의학과", "피부과", "정신건강의학과"]),
 }
-# 증상 표현 → 질환명 키워드 (AI 후보 좁히기 + AI 키가 없을 때 대체 판단)
-KW = {"두통": "두통 편두통 뇌", "어지": "어지 현훈 전정 빈혈", "경련": "경련 간질 뇌전증", "의식": "뇌졸중 뇌경색 뇌출혈 혼수",
-      "힘이 빠": "뇌경색 뇌출혈 마비 디스크", "시력": "근시 백내장 녹내장 망막 각막", "눈": "결막 각막 안구 녹내장", "이명": "이명 난청 중이염",
-      "코": "비염 부비동 비출혈", "삼킴": "인두 식도 후두 편도", "덩어리": "갑상선 결절 종양 림프", "목소리": "후두 성대 갑상선",
-      "체중": "갑상선 당뇨 종양", "가슴": "협심증 심근경색 심장 늑", "숨": "천식 폐렴 폐 심부전 기관지", "기침": "기관지 폐렴 천식 결핵",
-      "가래": "기관지 천식 폐렴", "두근": "부정맥 빈맥 심방", "배": "위염 위 장염 담낭 췌장 충수", "구토": "위염 장염 담", "설사": "장염 대장",
-      "변비": "변비 대장", "피가": "치핵 대장 위궤양 출혈", "노래": "간염 간 담도 황달", "소변": "방광 요로 신우 전립선 신장",
-      "옆구리": "요로 결석 신우 신장 담", "골반": "골반 자궁 난소 전립선", "생리": "월경 자궁 난소", "관절": "관절 관절염 류마티스 통풍",
-      "저림": "신경 디스크 추간판 수근관 협착", "손목": "수근관 건초염 관절", "어깨": "회전근개 어깨 관절낭 충돌", "허리": "추간판 요통 협착 척추",
-      "무릎": "무릎 슬관절 연골 반월상", "발": "족저 무좀 통풍 당뇨 발", "종아리": "정맥 혈전 근", "붓기": "부종 림프 신장 심부전",
-      "떨림": "파킨슨 진전 갑상선", "피로": "빈혈 갑상선 간 당뇨", "열": "감염 바이러스 결핵 폐렴", "발진": "피부염 두드러기 습진 건선",
-      "멍": "혈소판 혈우 출혈 자반", "우울": "우울 불안 조울", "불안": "불안 공황 우울", "잠": "불면 수면", "항문": "치핵 치루 항문 직장",
-      "등": "척추 측만 흉추 늑막"}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -141,6 +110,7 @@ def icd_list(prefixes: tuple):
     return sorted(out.items(), key=lambda x: x[1])
 
 
+# ---------------- Gemini ----------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def gemini_models():
     """이 키로 지금 쓸 수 있는 Gemini flash 계열 모델 목록 (안정판 · 최신 버전 우선). 모델 이름이 바뀌어도 자동으로 따라가요."""
@@ -183,10 +153,14 @@ def call_ai(prompt):
     raise RuntimeError(last + f" (시도한 모델: {', '.join(tried)})")
 
 
-def rank(df, kws):
-    """질환명에서 증상 키워드를 찾아 점수를 매기는 pandas 계산.
-    - 여러 질환에 흔히 들어가는 단어(예: '심장')는 가중치를 낮추고, 드문 단어(예: '협심증')는 높여요.
-    - 일치도(%) = 상위 후보 6개 안에서 각 질환의 점수 비중 (합계 100%)."""
+def parse_json(txt):
+    return json.loads(txt[txt.index("{"):txt.rindex("}") + 1])
+
+
+# ---------------- 관련 질환: 키워드로 후보 → Gemini가 추정 ----------------
+def candidates(df, kws, limit=40):
+    """질환명에 키워드가 들어간 질환을 pandas로 골라 후보를 만들어요.
+    여러 질환에 흔한 단어는 가중치를 낮추고 드문 단어는 높여요. (후보 좁히기용 점수이고 확률이 아니에요.)"""
     names, n = df["질환명"], len(df)
     s = pd.Series(0.0, index=df.index)
     for k, w in kws.items():
@@ -195,30 +169,27 @@ def rank(df, kws):
         if d:
             s = s + hit.astype(float) * w * (math.log((n + 1) / (d + 1)) + 1)
     out = df.assign(점수=s)
-    out = out[out["점수"] > 0]
-    out = out.assign(길이=out["질환명"].str.len()).sort_values(["점수", "길이"], ascending=[False, True]).head(6)
-    out = out.drop(columns="길이").reset_index(drop=True)
-    out["일치도"] = (out["점수"] / out["점수"].sum() * 100).round().astype(int)
-    return out
+    out = out[out["점수"] > 0].assign(길이=out["질환명"].str.len())
+    return out.sort_values(["점수", "길이"], ascending=[False, True]).head(limit).drop(columns="길이").reset_index(drop=True)
 
 
 @st.cache_data(ttl=1800, show_spinner="증상을 분석하는 중...")
-def analyze(region, picked, text, sev, prefixes, depts):
-    """AI(Gemini)는 '소견'과 키워드만 담당. 질환 후보와 일치도는 심평원 상병 데이터에서 pandas로 계산."""
+def analyze(region, text, sev, prefixes, depts):
+    """1) Gemini: 소견 + 질환명 키워드  2) pandas: 심평원 상병 목록에서 키워드로 후보 추리기
+    3) Gemini: 후보 목록 '안에서만' 가능성 높은 질환을 골라 근거와 함께 순위 매김 (목록에 없는 코드는 버려요)."""
     df = pd.DataFrame(icd_list(prefixes), columns=["질환명", "상병코드"])
-    ai, err = {}, ""
+    ai, err, pick_err = {}, "", ""
     try:
-        prompt = (f"불편한 부위: {REGIONS[region][0]}\n선택한 증상: {', '.join(picked) or '없음'}\n불편한 정도: {sev}\n"
-                  f"환자가 직접 쓴 설명: {text or '없음'}\n\n"
+        prompt = (f"불편한 부위: {REGIONS[region][0]}\n불편한 정도: {sev}\n환자가 직접 쓴 설명: {text}\n\n"
                   "아래 JSON 객체로만 답하세요. "
                   '{"opinion":"환자 표현을 근거로 한 종합 소견 3~4문장","emergency":true,"depts":["진료과"],'
                   '"keywords":["질환명에 들어갈 법한 한글 단어(예: 협심증, 추간판)"],"advice":"생활 안내 한 문장"}. '
-                  "depts는 최대 3개, keywords는 최대 8개. 응급 가능성이 있으면 emergency를 true로. "
+                  "depts는 최대 3개, keywords는 최대 10개. 응급 가능성이 있으면 emergency를 true로. "
                   "진단이 아니라 병원을 찾기 위한 참고용이라는 점을 소견에 반영하세요.")
-        txt = call_ai(prompt)
-        ai = json.loads(txt[txt.index("{"):txt.rindex("}") + 1])
+        ai = parse_json(call_ai(prompt))
     except Exception as e:  # noqa: BLE001
         err = str(e)[:250]
+
     kws = {}
 
     def add(k, w):
@@ -226,28 +197,44 @@ def analyze(region, picked, text, sev, prefixes, depts):
         if len(k) >= 2:
             kws[k] = max(kws.get(k, 0), w)
 
-    for sym in list(picked) + ([text] if text else []):
-        for k, v in KW.items():
-            if k in sym:
-                for x in v.split():
-                    add(x, 1.0)
     for k in ai.get("keywords", []):
         if isinstance(k, str):
             add(k, 2.0)
-    for x in re.findall(r"[가-힣]{2,}", text):
+    for x in re.findall(r"[가-힣]{2,}", text):  # 환자가 쓴 단어 그대로
         add(x, 0.5)
         if len(x) >= 3:
             add(x[:2], 0.5)  # '통증이' → '통증'
-    return {"ai": ai, "err": err, "table": rank(df, kws), "depts": (ai.get("depts") or list(depts))[:3]}
+    cand = candidates(df, kws)
 
-
-@st.cache_data(ttl=86400, show_spinner="질환 정보를 정리하는 중...")
-def disease_brief(name, code):
-    """선택한 질환의 일반적 경과·완치 가능성 (AI 일반 정보)."""
-    txt = call_ai(f"질환: {name} (KCD {code})\n아래 JSON 객체로만 답하세요. "
-                  '{"course":"일반적인 경과와 치료 기간 2문장","cure":"완치 또는 회복 가능성과 관리 방법 2문장"}. '
-                  "확실하지 않은 내용이나 수치는 쓰지 말고 '자료 없음'이라고 쓰세요. 숫자를 지어내지 마세요.")
-    return json.loads(txt[txt.index("{"):txt.rindex("}") + 1])
+    table = cand.head(6).assign(가능성=None, 근거=None)  # Gemini가 실패했을 때의 대체 결과
+    if not cand.empty and GEMINI:
+        try:
+            lst = "\n".join(f"{c}|{n}" for n, c in zip(cand["질환명"], cand["상병코드"]))
+            prompt = (f"불편한 부위: {REGIONS[region][0]}\n불편한 정도: {sev}\n환자가 직접 쓴 설명: {text}\n"
+                      f"앞선 종합 소견: {ai.get('opinion', '없음')}\n\n후보 질환 목록(상병코드|질환명):\n{lst}\n\n"
+                      "위 목록 안에서만 환자 설명과 가장 잘 맞는 질환을 가능성이 높은 순서로 최대 6개 고르세요. "
+                      "목록에 없는 질환이나 코드는 절대 쓰지 마세요. 설명과 맞지 않으면 적게 골라도 됩니다. "
+                      '아래 JSON 객체로만 답하세요. {"picks":[{"code":"목록의 상병코드 그대로","level":"높음|중간|낮음",'
+                      '"reason":"환자 표현을 근거로 한 한 문장"}]}. 진단이 아니라 참고용입니다.')
+            picks = parse_json(call_ai(prompt)).get("picks", [])
+            by_code = dict(zip(cand["상병코드"], cand["질환명"]))
+            rows, seen = [], set()
+            for p in picks:
+                cd = str(p.get("code", "")).strip()
+                if cd in by_code and cd not in seen:  # 후보에 있는 코드만 인정
+                    seen.add(cd)
+                    lv = p.get("level") if p.get("level") in ("높음", "중간", "낮음") else None
+                    rows.append({"질환명": by_code[cd], "상병코드": cd, "가능성": lv, "근거": str(p.get("reason", ""))[:200]})
+            if rows:
+                table = pd.DataFrame(rows[:6])
+            else:
+                pick_err = "AI가 후보 안에서 고른 질환이 없어서 키워드 순서로 보여드려요."
+        except Exception as e:  # noqa: BLE001
+            pick_err = str(e)[:250]
+    elif not GEMINI:
+        pick_err = "GEMINI_API_KEY가 없어서 키워드 순서로만 보여드려요."
+    return {"ai": ai, "err": err, "pick_err": pick_err, "table": table.reset_index(drop=True),
+            "depts": (ai.get("depts") or list(depts))[:3]}
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -263,43 +250,95 @@ def wiki_summary(name):
         return "", ""
 
 
-@st.cache_data(show_spinner=False)
-def load_stats():
-    """data/disease_stats.(csv|xlsx) — 보건의료빅데이터개방시스템 '질병 세분류(4단 상병) 통계' 다운로드 파일을 pandas로 읽음."""
-    for f in sorted((_here / "data").glob("*.csv")) + sorted((_here / "data").glob("*.xlsx")):  # data 폴더의 아무 이름의 파일
-        d = None
-        try:
-            if f.suffix == ".xlsx":
-                d = pd.read_excel(f)
+# ---------------- 질환 통계: 심평원 질병정보서비스 API → pandas ----------------
+STATS_BASE = "https://apis.data.go.kr/B551182/diseaseInfoService1"
+ENDPOINTS = {"성별·연령별": "getDissByGenderAgeStats1", "입원·외래별": "getDissByHsptlzFrgnStats1",
+             "요양기관 종별": "getDissByClassesStats1", "요양기관 지역별": "getDissByAreaStats1"}
+TOTAL = {"계", "합계", "전체", "소계", "total", "Total"}
+CNT_RE = r"ptnt|patnt|patient"
+
+
+def fetch_rows(ep, code):
+    """최근 연도부터 조회해 자료가 있는 첫 결과를 돌려줘요. 없으면 빈 목록과 이유."""
+    note, raw = "자료 없음", ""
+    for year in (date.today().year - 1, date.today().year - 2):
+        for sc in dict.fromkeys([code, code.replace(".", "").upper()]):
+            try:
+                r = requests.get(f"{STATS_BASE}/{ep}", timeout=12, params={
+                    "serviceKey": HIRA_DISEASE, "numOfRows": 500, "pageNo": 1, "_type": "json",
+                    "sickType": 2, "medTp": 1, "sickCd": sc, "year": year})
+                raw = r.text[:1500]
+                items = r.json()["response"]["body"]["items"]
+                rows = items.get("item", []) if items else []
+                rows = [rows] if isinstance(rows, dict) else rows
+            except Exception as e:  # noqa: BLE001
+                note = f"조회 오류: {str(e)[:80]}"
+                continue
+            if rows:
+                return rows, year, "", raw
+            note = f"{year}년 자료가 없어요."
+    return [], None, note, raw
+
+
+@st.cache_data(ttl=86400, show_spinner="통계를 불러오는 중...")
+def disease_stats(code):
+    if not HIRA_DISEASE:
+        return {k: {"rows": [], "year": None, "note": "HIRA_DISEASE_SERVICE_KEY가 없어요.", "raw": ""} for k in ENDPOINTS}
+    with ThreadPoolExecutor(4) as ex:
+        res = list(ex.map(lambda ep: fetch_rows(ep, code), ENDPOINTS.values()))
+    return {k: {"rows": r[0], "year": r[1], "note": r[2], "raw": r[3]} for k, r in zip(ENDPOINTS, res)}
+
+
+def _num(s):
+    return pd.to_numeric(s.astype(str).str.replace(",", ""), errors="coerce")
+
+
+def tidy(rows):
+    """API 응답을 DataFrame으로. 환자수·건수·금액처럼 숫자로 읽히는 항목(meas)과, 값이 여러 가지인 구분 항목(cats)을 나눠요."""
+    df = pd.DataFrame(rows)
+    meas = [c for c in df.columns if re.search(CNT_RE + r"|cnt|amt|cost|dd|day|clm|fee|pay", c, re.I) and _num(df[c]).notna().all()]
+    cats = [c for c in df.columns if c not in meas and df[c].astype(str).nunique() > 1 and not re.search(r"year|yy|ym", c, re.I)]
+    for c in meas:
+        df[c] = _num(df[c])
+    return df, meas, cats
+
+
+def total_patients(rows):
+    """성별·연령 통계에서 연간 환자 수. 전체('계') 행이 있으면 그 값, 없으면 구간 합산(일부 중복 가능). 못 찾으면 None."""
+    if not rows:
+        return None, ""
+    df, meas, cats = tidy(rows)
+    f = next((c for c in meas if re.search(CNT_RE, c, re.I)), None)
+    if f is None:
+        return None, "응답에서 환자 수 항목을 못 찾았어요. 항목: " + ", ".join(df.columns)
+    tot = df[df[cats].astype(str).isin(TOTAL).all(axis=1)] if cats else df.iloc[0:0]
+    if not tot.empty:
+        return float(tot[f].iloc[0]), "성별·연령 전체('계') 행의 값이에요."
+    return float(df[f].sum()), "성별·연령 구간을 합산한 값이라, 연령 이동으로 일부 중복될 수 있어요."
+
+
+def show_stat(label, info):
+    rows = info["rows"]
+    if not rows:
+        st.caption(f"{label} 자료를 가져오지 못했어요. ({info['note']})")
+        if info["raw"]:
+            with st.expander("API 응답 확인"):
+                st.code(info["raw"])
+        return
+    df, meas, cats = tidy(rows)
+    f = next((c for c in meas if re.search(CNT_RE, c, re.I)), None)
+    if f and cats:
+        base = df[~df[cats].astype(str).isin(TOTAL).any(axis=1)]  # '계' 행은 막대에서 제외
+        if not base.empty:
+            if len(cats) == 2:  # 예) 성별 × 연령 → 연령별 막대를 성별로 쌓아요
+                col = min(cats, key=lambda c: base[c].astype(str).nunique())
+                idx = next(c for c in cats if c != col)
+                chart = base.groupby([idx, col], sort=False)[f].sum().unstack(col)
             else:
-                for enc in ("utf-8-sig", "cp949"):
-                    try:
-                        d = pd.read_csv(f, encoding=enc)
-                        break
-                    except Exception:  # noqa: BLE001
-                        continue
-        except Exception:  # noqa: BLE001
-            d = None
-        if d is None:
-            continue
-        code = next((c for c in d.columns if "상병" in str(c) and "코드" in str(c)), None) or next((c for c in d.columns if "코드" in str(c)), None)
-        pat = next((c for c in d.columns if "환자" in str(c)), None)
-        if code is None or pat is None:
-            continue
-        yr = next((c for c in d.columns if "년도" in str(c) or "연도" in str(c)), None)
-        if yr is not None:
-            d = d[d[yr] == d[yr].max()]  # 여러 해가 섞여 있으면 가장 최근 해만
-        d = d[[code, pat]].copy()
-        d.columns = ["코드", "환자수"]
-        d["코드"] = d["코드"].astype(str).str.replace(".", "", regex=False).str.upper().str.strip()
-        d["환자수"] = pd.to_numeric(d["환자수"].astype(str).str.replace(",", ""), errors="coerce")
-        return d.dropna().groupby("코드")["환자수"].sum().to_dict()
-    return {}
-
-
-def patients(S, code):
-    c = code.replace(".", "").upper()
-    return S.get(c, S.get(c[:3])) if S else None
+                chart = base.groupby(base[cats].astype(str).agg(" · ".join, axis=1), sort=False)[f].sum().rename("환자 수")
+            st.bar_chart(chart)
+    st.dataframe(df[cats + meas], hide_index=True, use_container_width=True)
+    st.caption(f"{info['year']}년 · 건강보험 · 주상병 기준 · 출처: 건강보험심사평가원 질병정보서비스")
 
 
 RED = ("의식", "경련", "발작", "호흡곤란", "숨을 못", "숨이 안", "마비", "식은땀", "피를 토", "혈변", "검은 변", "시력을 잃", "말이 어눌", "실신", "쓰러")
@@ -313,24 +352,23 @@ def go(name, code, depts=()):
     st.switch_page(HOSPITAL_PAGE)
 
 
-def show_detail(nm, cd, pct, S, depts):
+def show_detail(nm, cd, depts, level=None, reason=None):
     with st.container(border=True):
         st.markdown(f"#### {nm} · `{cd}`")
-        if pct is not None:
-            st.progress(pct / 100, text=f"후보 중 일치도 {pct}%")
-        n = patients(S, cd)
+        if level or reason:
+            st.caption(f"AI 추정 가능성: {level or '-'} · {reason or ''}")
+        stats = disease_stats(cd)
+        n, how = total_patients(stats["성별·연령별"]["rows"])
         if n is not None:
-            st.metric("연간 진료 환자 수 (건강보험 청구 기준)", f"{int(n):,}명",
-                      help="청구 명세서의 주상병 기준이고, 자료 구분(입원·외래, 연령 등)을 합산해 중복이 있을 수 있어요.")
+            st.metric(f"{stats['성별·연령별']['year']}년 진료 환자 수 (건강보험)", f"{int(n):,}명", help=how)
         else:
-            st.caption("환자 수 통계 파일이 없어요. (선택) `data` 폴더에 심평원 4단상병 통계 CSV를 넣으면 표시돼요.")
-        if GEMINI:
-            try:
-                b = disease_brief(nm, cd)
-                st.markdown("**경과 · 완치 가능성** (AI 일반 정보)")
-                st.write(f"{b.get('course', '')} {b.get('cure', '')}")
-            except Exception as e:  # noqa: BLE001
-                st.caption(f"AI 정보를 불러오지 못했어요. ({str(e)[:120]})")
+            st.caption(f"환자 수를 가져오지 못했어요. ({how or stats['성별·연령별']['note']})")
+        st.markdown("**📊 통계**")
+        tabs = st.tabs(list(ENDPOINTS))
+        for t, k in zip(tabs, ENDPOINTS):
+            with t:
+                show_stat(k, stats[k])
+        st.caption("※ 건강보험 청구 자료라 진단·진료 현황만 있고, 완치·회복 여부 같은 치료 결과는 이 자료에 없어요.")
         ext, url = wiki_summary(nm)
         if ext:
             st.markdown("**개요**")
@@ -340,15 +378,17 @@ def show_detail(nm, cd, pct, S, depts):
             go(nm, cd, depts)
 
 
-def row_html(i, nm, cd, n):
-    extra = f" · 연 {int(n):,}명" if n is not None else ""
+def row_html(i, nm, cd, level, reason):
+    lv = {"높음": "h", "중간": "m", "낮음": "l"}.get(level)
+    badge = f'<span class="lv {lv}">가능성 {level}</span>' if lv else ""
+    why = f'<div class="sub">{html.escape(reason)}</div>' if reason else ""
     return (f'<div class="rk"><span class="rn{" top" if i == 0 else ""}">{i + 1}</span>'
-            f'<div><b>{html.escape(nm)}</b><div class="sub">{html.escape(cd)}{extra}</div></div></div>')
+            f'<div><b>{html.escape(nm)}</b>{badge}<div class="sub">{html.escape(cd)}</div>{why}</div></div>')
 
 
 # ---------------------------------------------------------------
 st.markdown('<div class="topbar"><div class="logo">✚</div><div><b>어디가 불편하신가요?</b>'
-            '<span>증상 분석 · 질환 정보 · 가까운 병원 찾기</span></div></div>'
+            '<span>증상 분석 · 질환 통계 · 가까운 병원 찾기</span></div></div>'
             '<div class="steps"><span>① 부위 선택</span><span>② 증상 입력</span><span>③ 질환 확인</span><span>④ 병원 찾기</span></div>',
             unsafe_allow_html=True)
 
@@ -367,7 +407,7 @@ with right:
         if st.button("🏥 병원 바로 찾기", use_container_width=True):
             st.switch_page(HOSPITAL_PAGE)
     else:
-        label, prefixes, depts, _sym = REGIONS[region]
+        label, prefixes, depts = REGIONS[region]
         st.markdown(f'<div class="panel"><span class="rg">선택한 부위</span><div class="rgn">{label}</div></div>', unsafe_allow_html=True)
         text = st.text_area("어떻게 아픈지 자세히 적어 주세요", height=120,
                             placeholder="예) 어제 저녁부터 왼쪽 가슴이 조이듯 아프고, 계단을 오르면 숨이 차요. 식은땀도 났어요.")
@@ -377,18 +417,17 @@ with right:
         if st.button("🔍 분석하기", type="primary", use_container_width=True, disabled=not text.strip()):
             st.session_state.pop("detail", None)
             try:
-                st.session_state["res"] = (region, analyze(region, (), text.strip(), sev, tuple(prefixes), tuple(depts)))
+                st.session_state["res"] = (region, analyze(region, text.strip(), sev, tuple(prefixes), tuple(depts)))
             except Exception as e:  # noqa: BLE001
                 st.session_state.pop("res", None)
                 st.warning(f"분석하지 못했어요. ({e})")
 
-        S = load_stats()
         res = st.session_state.get("res")
         if res and res[0] == region:
             res = res[1]
             ai, rdepts = res["ai"], res["depts"]
             if res["err"]:
-                st.warning("AI 소견을 가져오지 못해서 키워드 계산만 했어요. " + res["err"])
+                st.warning("AI 소견을 가져오지 못했어요. " + res["err"])
             if ai.get("emergency"):
                 st.error("⚠️ 응급 가능성이 있어 보여요. 지체하지 말고 119에 연락하거나 가까운 응급실로 가세요.")
             if ai.get("opinion"):
@@ -400,19 +439,19 @@ with right:
             if table.empty:
                 st.info("입력한 증상과 맞는 질환명을 찾지 못했어요. 증상을 더 자세히 적어 보세요.")
             else:
-                st.markdown("**관련 질환** &nbsp;<span class='sub'>일치도순 · 후보 6개 안에서의 상대 비중(합계 100%) · 진단 확률이 아니에요</span>",
+                st.markdown("**관련 질환** &nbsp;<span class='sub'>AI가 심평원 상병 후보 중에서 고른 추정이에요 · 진단이 아니에요</span>",
                             unsafe_allow_html=True)
+                if res["pick_err"]:
+                    st.caption("⚠️ " + res["pick_err"])
                 with st.container(border=True):
                     for i, r in table.iterrows():
-                        c1, c2, c3 = st.columns([3.1, 2.2, 0.9], vertical_alignment="center")
-                        c1.markdown(row_html(i, r["질환명"], r["상병코드"], patients(S, r["상병코드"])), unsafe_allow_html=True)
-                        c2.markdown(f'<div class="g"><span style="width:{r["일치도"]}%"></span></div><div class="gl">{r["일치도"]}%</div>',
-                                    unsafe_allow_html=True)
+                        c1, c3 = st.columns([5, 0.9], vertical_alignment="center")
+                        c1.markdown(row_html(i, r["질환명"], r["상병코드"], r["가능성"], r["근거"]), unsafe_allow_html=True)
                         if c3.button("상세", key=f"d_{r['상병코드']}_{i}", use_container_width=True):
-                            st.session_state["detail"] = (r["질환명"], r["상병코드"], int(r["일치도"]))
+                            st.session_state["detail"] = (r["질환명"], r["상병코드"], r["가능성"], r["근거"])
                 dt = st.session_state.get("detail")
                 if dt and dt[1] in set(table["상병코드"]):
-                    show_detail(dt[0], dt[1], dt[2], S, rdepts)
+                    show_detail(dt[0], dt[1], rdepts, dt[2], dt[3])
 
         with st.expander("📋 이 부위의 전체 질환 목록 (심평원 상병 데이터)"):
             try:
@@ -421,17 +460,13 @@ with right:
                 if q.strip():
                     allv = allv[allv["질환명"].str.contains(q.strip(), regex=False)]
                 allv = allv.head(300).reset_index(drop=True)
-                cfg = {}
-                if S:
-                    allv["연간 환자수"] = [patients(S, c) for c in allv["상병코드"]]
-                    cfg["연간 환자수"] = st.column_config.NumberColumn("연간 환자수", format="%d")
-                ev = st.dataframe(allv, hide_index=True, use_container_width=True, height=300, column_config=cfg,
+                ev = st.dataframe(allv, hide_index=True, use_container_width=True, height=300,
                                   on_select="rerun", selection_mode="single-row", key="allt")
                 if ev.selection.rows:
                     r = allv.iloc[ev.selection.rows[0]]
-                    show_detail(r["질환명"], r["상병코드"], None, S, depts)
+                    show_detail(r["질환명"], r["상병코드"], depts)
             except Exception as e:  # noqa: BLE001
                 st.warning(f"질환 목록을 불러오지 못했어요. ({e})")
 
-st.markdown('<div class="note">이 화면은 진단이 아니라 진료과와 병원을 찾기 위한 안내예요. '
+st.markdown('<div class="note">이 화면은 진단이 아니라 진료과와 병원을 찾기 위한 안내예요. AI 소견과 관련 질환은 입력한 설명을 바탕으로 한 추정이에요. '
             '증상이 계속되거나 심해지면 의료진과 상담하세요.</div>', unsafe_allow_html=True)

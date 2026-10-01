@@ -1,4 +1,4 @@
-"""병원 찾기 — 진단된 질환·추천 진료과 기준으로 내 주변 병원을 지도와 순위로 보여줘요."""
+"""병원 찾기 — 진단된 질환·추천 진료과 기준으로 내 주변 병원을 지도와 거리순으로 보여줘요."""
 import html
 import json
 import math
@@ -49,7 +49,6 @@ html,body,.stApp,[class*="css"]{font-family:"Pretendard","Malgun Gothic",sans-se
 .hc-name{font-weight:700;line-height:1.35}.hc-meta{font-size:.82rem;color:#5E7186;margin-top:3px}
 .tag{display:inline-block;font-size:.72rem;font-weight:700;padding:2px 9px;border-radius:999px;margin-right:6px;color:#fff}
 .hc-dist{margin-left:auto;text-align:right;font-weight:800;white-space:nowrap}.hc-dist small{display:block;font-weight:500;color:#5E7186;font-size:.72rem}
-.bar{height:6px;border-radius:99px;background:#EAF0F7;margin:10px 0 3px;overflow:hidden}.bar>span{display:block;height:100%;background:linear-gradient(90deg,#4F9BFF,#1B6FE0);border-radius:99px}
 .links{margin-top:9px;display:flex;gap:8px;flex-wrap:wrap}
 .links a{font-size:.8rem;font-weight:600;color:#1B6FE0;text-decoration:none;border:1px solid #DCE6F1;padding:4px 11px;border-radius:999px}
 .empty{background:#fff;border:1px dashed #BFD0E3;border-radius:14px;padding:26px;text-align:center;color:#5E7186;line-height:1.7}
@@ -61,8 +60,10 @@ html,body,.stApp,[class*="css"]{font-family:"Pretendard","Malgun Gothic",sans-se
 DEPT = {"내과": "01", "신경과": "02", "정신건강의학과": "03", "외과": "04", "정형외과": "05", "신경외과": "06", "흉부외과": "07",
         "성형외과": "08", "마취통증의학과": "09", "산부인과": "10", "소아청소년과": "11", "안과": "12", "이비인후과": "13",
         "피부과": "14", "비뇨의학과": "15", "영상의학과": "16", "재활의학과": "21", "가정의학과": "23", "응급의학과": "24"}
+# 종별 코드 → (이름, 정렬용 값(미사용), 색)
 CL = {"01": ("상급종합", 40, "#1B6FE0"), "11": ("종합병원", 30, "#0E9F8E"), "21": ("병원", 20, "#F59E0B"), "31": ("의원", 10, "#8B5CF6")}
 PHARM = ("약국", 0, "#EC4899")
+UNKNOWN = ("종별 미상", 0, "#94A3B8")  # 카카오 데이터처럼 종별 정보가 없는 경우
 
 
 def dept_code(name):
@@ -133,11 +134,11 @@ def fetch_hira(lat, lng, radius_km, dcodes):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_kakao(lat, lng, radius_km, code, query):
-    """카카오 로컬: 병원(HP8) 또는 약국(PM9)."""
+    """카카오 로컬: 병원(HP8) 또는 약국(PM9). 종별 정보가 없어서 병원은 '?'(종별 미상)로 둬요."""
     r = requests.get("https://dapi.kakao.com/v2/local/search/keyword.json", timeout=10, headers={"Authorization": f"KakaoAK {KAKAO}"},
                      params={"query": query, "x": lng, "y": lat, "radius": min(int(radius_km * 1000), 20000), "sort": "distance",
                              "size": 15, "category_group_code": code})
-    return [{"name": d["place_name"], "cl": "PH" if code == "PM9" else "21", "addr": d.get("road_address_name") or d.get("address_name", ""),
+    return [{"name": d["place_name"], "cl": "PH" if code == "PM9" else "?", "addr": d.get("road_address_name") or d.get("address_name", ""),
              "tel": d.get("phone", ""), "url": d.get("place_url", ""), "lat": float(d["y"]), "lng": float(d["x"]), "doctors": 0.0}
             for d in r.json().get("documents", [])]
 
@@ -148,19 +149,16 @@ def build(rows, lat, lng, radius):
         return df
     df["dist"] = [hav(lat, lng, a, b) for a, b in zip(df["lat"], df["lng"])]
     df = df[df["dist"] <= radius].copy()
-    info = lambda c: PHARM if c == "PH" else CL.get(c, CL["21"])  # noqa: E731
+    info = lambda c: PHARM if c == "PH" else CL.get(c, UNKNOWN)  # noqa: E731
     df["type"] = [info(c)[0] for c in df["cl"]]
     df["color"] = [info(c)[2] for c in df["cl"]]
-    raw = pd.Series([info(c)[1] for c in df["cl"]], index=df.index) + (df["doctors"] / 15).clip(upper=10) + (25 - (df["dist"] * 1.2).clip(upper=25))
-    df["score"] = (raw / 75 * 100).clip(1, 99).round().astype(int)
-    return df.sort_values(["score", "dist"], ascending=[False, True]).reset_index(drop=True)
+    return df.sort_values("dist").reset_index(drop=True)  # 점수 없이 거리순
 
 
 def card(r, rank=None):
     badge = (f'<div class="badge{" top" if rank and rank <= 3 else ""}">{rank}</div>' if rank else
              f'<div class="badge" style="background:{r["color"]}">+</div>')
-    bar = (f'<div class="bar"><span style="width:{r["score"]}%"></span></div><div class="hc-meta">추천 지수 {r["score"]}점'
-           + (f' · 의사 {int(r["doctors"])}명' if r["doctors"] else "") + "</div>") if rank else ""
+    bar = (f'<div class="hc-meta">의사 {int(r["doctors"])}명</div>' if rank and r["doctors"] else "")
     links = (f'<a href="tel:{html.escape(r["tel"])}">📞 전화</a>' if r["tel"] else "")
     links += f'<a target="_blank" href="https://map.kakao.com/link/to/{quote(r["name"])},{r["lat"]},{r["lng"]}">🧭 길찾기</a>'
     if r["url"]:
@@ -178,9 +176,9 @@ const l=document.createElement('link');l.rel='stylesheet';l.href='https://cdnjs.
 loadJs(['https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js','https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js','https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'],start);
 function start(){try{start2();}catch(e){msg('지도 오류: '+e.message);}}
 function start2(){const map=L.map('m');map.fitBounds(L.latLng(D.c[0],D.c[1]).toBounds(D.r*2000));
- const T=[['https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png','© OpenStreetMap © CARTO'],['https://tile.openstreetmap.org/{z}/{x}/{y}.png','© OpenStreetMap']];
+ const T=[['https://tile.openstreetmap.org/{z}/{x}/{y}.png','© OpenStreetMap contributors']];
  let ti=0,er=0,ly=null;function use(){if(ly)map.removeLayer(ly);if(ti>=T.length){msg('지도 타일 서버에 접속하지 못했어요.');return;}
-  ly=L.tileLayer(T[ti][0],{maxZoom:19,attribution:T[ti][1],subdomains:'abcd'}).addTo(map);er=0;ly.on('tileerror',()=>{if(++er===3){ti++;use();}});}use();
+  ly=L.tileLayer(T[ti][0],{maxZoom:19,attribution:T[ti][1]}).addTo(map);er=0;ly.on('tileerror',()=>{if(++er===3){ti++;use();}});}use();
  L.circle(D.c,{radius:D.r*1000,color:'#1B6FE0',weight:1,fillOpacity:.04}).addTo(map);
  L.circleMarker(D.c,{radius:8,color:'#fff',weight:3,fillColor:'#0F2A43',fillOpacity:1}).addTo(map).bindTooltip('내 위치');
  D.p.forEach(p=>{const top=p.rank&&p.rank<=5,s=top?26:14;
@@ -206,7 +204,7 @@ def map_html(center, radius, df):
 # ---------------------------------------------------------------
 d = st.session_state.get("pick_disease") or {}
 st.markdown('<div class="topbar"><div class="logo">✚</div><div><b>병원 찾기</b>'
-            '<span>추천 진료과 기준으로 내 주변 병원을 지도와 순위로 보여드려요</span></div></div>', unsafe_allow_html=True)
+            '<span>추천 진료과 기준으로 내 주변 병원을 지도와 거리순으로 보여드려요</span></div></div>', unsafe_allow_html=True)
 st.page_link("main.py", label="← 증상 다시 선택", icon="🧍")
 
 if not (HIRA or KAKAO):
@@ -272,31 +270,26 @@ left, right = st.columns([1.5, 1], gap="large")
 with left:
     components.html(map_html([lat, lng], radius, pd.concat([hosp.head(60), df[df["type"] == "약국"].head(20)]) if not df.empty else df),
                     height=640)
-    st.caption("지도의 숫자는 추천 순위 상위 5곳이에요. 점을 누르면 상세가 보여요.")
+    st.caption("지도의 숫자는 가까운 순위 상위 5곳이에요. 점을 누르면 상세가 보여요.")
 with right:
     if hosp.empty:
         st.markdown('<div class="empty"><b>반경 안에서 병원을 찾지 못했어요</b><br>반경을 넓히거나 진료과를 바꿔 보세요.</div>', unsafe_allow_html=True)
     else:
         st.markdown(f'<div class="kpis"><div class="kpi"><div class="k">병원</div><div class="n">{len(hosp)}곳</div></div>'
                     f'<div class="kpi"><div class="k">가장 가까운 곳</div><div class="n">{hosp["dist"].min():.1f}km</div></div>'
-                    f'<div class="kpi"><div class="k">추천 1위</div><div class="n" style="font-size:.95rem">{html.escape(hosp.loc[0, "name"])}</div></div></div>',
+                    f'<div class="kpi"><div class="k">가장 가까운 병원</div><div class="n" style="font-size:.95rem">{html.escape(hosp.loc[0, "name"])}</div></div></div>',
                     unsafe_allow_html=True)
-        t1, t2, t3 = st.tabs(["추천순", "가까운순", "약국"])
+        t1, t3 = st.tabs(["가까운순", "약국"])
         with t1, st.container(height=520, border=False):
-            for i, r in hosp.head(10).iterrows():
+            for i, r in hosp.head(12).iterrows():
                 st.markdown(card(r, i + 1), unsafe_allow_html=True)
-        with t2, st.container(height=520, border=False):
-            for _, r in hosp.sort_values("dist").head(12).iterrows():
-                st.markdown(card(r), unsafe_allow_html=True)
         with t3, st.container(height=520, border=False):
             ph = df[df["type"] == "약국"].sort_values("dist").head(12)
             if ph.empty:
                 st.markdown('<div class="empty">약국 정보는 KAKAO_REST_API_KEY가 있어야 나와요.</div>', unsafe_allow_html=True)
             for _, r in ph.iterrows():
                 st.markdown(card(r), unsafe_allow_html=True)
-        with st.expander("추천 지수는 어떻게 계산되나요?"):
-            st.markdown("- 기관 종별(상급종합 > 종합병원 > 병원 > 의원) 최대 40점\n- 의사 수(심평원 제공) 최대 10점\n- 거리 가까울수록 최대 25점\n\n"
-                        "진료과 필터는 심평원 진료과목 코드로 적용돼요. 공식 평가가 아니라 공개 데이터를 합산한 참고 점수예요.")
+        st.caption("진료과 필터는 심평원 진료과목 코드로 적용돼요. 순서는 직선거리 기준이고 공식 평가가 아니에요.")
 
 
 # =========================================================
@@ -313,7 +306,9 @@ if not hosp.empty:
     ca, cb = st.columns(2)
     with ca:
         st.markdown("**종별 병원 수**")
-        by_type = hosp["type"].value_counts().reindex(["상급종합", "종합병원", "병원", "의원"]).fillna(0).astype(int)
+        order = ["상급종합", "종합병원", "병원", "의원", "종별 미상"]
+        by_type = hosp["type"].value_counts().reindex(order).fillna(0).astype(int)
+        by_type = by_type[by_type > 0]
         st.bar_chart(by_type.rename("병원 수"), color="#1B6FE0")
     with cb:
         st.markdown("**거리별 병원 수**")
@@ -323,12 +318,11 @@ if not hosp.empty:
         by_dist.index = by_dist.index.astype(str)
         st.bar_chart(by_dist.rename("병원 수"), color="#0E9F8E")
 
-    st.markdown("**추천 순위표**")
-    tbl = hosp.head(15)[["name", "type", "dist", "doctors", "score", "addr"]].rename(
-        columns={"name": "병원", "type": "종별", "dist": "거리", "doctors": "의사 수", "score": "추천 지수", "addr": "주소"})
+    st.markdown("**가까운 병원 순위표**")
+    tbl = hosp.head(15)[["name", "type", "dist", "doctors", "addr"]].rename(
+        columns={"name": "병원", "type": "종별", "dist": "거리", "doctors": "의사 수", "addr": "주소"})
     tbl.insert(0, "순위", range(1, len(tbl) + 1))
     st.dataframe(tbl, hide_index=True, use_container_width=True, column_config={
-        "추천 지수": st.column_config.ProgressColumn("추천 지수", min_value=0, max_value=100, format="%d점"),
         "거리": st.column_config.NumberColumn("거리(km)", format="%.1f"),
         "의사 수": st.column_config.NumberColumn("의사 수", format="%d명"),
     })
