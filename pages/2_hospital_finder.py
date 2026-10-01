@@ -3,6 +3,7 @@ import html
 import json
 import math
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote, unquote
 
@@ -102,34 +103,66 @@ def place_search(q):
     return out
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def fetch_hira(lat, lng, radius_km, dcodes):
-    """심평원 병원정보서비스: 종별(상급·종합·병원·의원) × 진료과목 코드로 주변 병원 조회."""
-    def one(args):
-        cl, dc = args
-        p = {"serviceKey": HIRA, "xPos": lng, "yPos": lat, "radius": int(radius_km * 1000), "clCd": cl,
-             "numOfRows": 100, "pageNo": 1, "_type": "json"}
-        if dc:
-            p["dgsbjtCd"] = dc
-        r = requests.get("https://apis.data.go.kr/B551182/hospInfoServicev2/getHospBasisList", params=p, timeout=15)
+HIRA_URL = "https://apis.data.go.kr/B551182/hospInfoServicev2/getHospBasisList"
+
+
+def hira_one(lat, lng, radius_km, cl, dc):
+    """심평원 병원정보서비스 1건(종별 × 진료과목) 조회. 서버가 느리면 한 번 더 시도하고, 그래도 안 되면 예외."""
+    p = {"serviceKey": HIRA, "xPos": lng, "yPos": lat, "radius": int(radius_km * 1000), "clCd": cl,
+         "numOfRows": 100, "pageNo": 1, "_type": "json"}
+    if dc:
+        p["dgsbjtCd"] = dc
+    last = "알 수 없음"
+    for _ in range(2):
+        try:
+            r = requests.get(HIRA_URL, params=p, timeout=(8, 30))
+        except requests.exceptions.RequestException as e:
+            last = f"서버 응답 지연/실패({type(e).__name__})"
+            continue
         try:
             items = r.json()["response"]["body"]["items"]
             items = items.get("item", []) if items else []
         except Exception:
-            raise RuntimeError(f"심평원 응답 오류 HTTP {r.status_code}: {r.text[:140]}")
-        return cl, ([items] if isinstance(items, dict) else items)
+            raise RuntimeError(f"심평원 응답 오류 HTTP {r.status_code}: {r.text[:100]}")
+        return [items] if isinstance(items, dict) else items
+    raise RuntimeError("심평원 " + last)
 
+
+def fetch_hira(lat, lng, radius_km, dcodes):
+    """종별(상급·종합·병원·의원) × 진료과목 코드로 주변 병원 조회. 일부가 실패해도 성공한 결과는 쓰고, 성공분만 30분 캐시해요.
+    돌려주는 값: (병원 목록, 실패 메시지 목록, 전체 조회 수)"""
+    cache = st.session_state.setdefault("hira_cache", {})
+    now = time.time()
+    jobs = [(c, d) for c in CL for d in (dcodes or (None,))]
+    key = lambda j: (lat, lng, radius_km) + j  # noqa: E731
+    todo = [j for j in jobs if key(j) not in cache or now - cache[key(j)][0] > 1800]
+    errs = []
+
+    def run(j):
+        try:
+            return j, hira_one(lat, lng, radius_km, *j), None
+        except Exception as e:  # noqa: BLE001
+            return j, [], str(e)[:140]
+
+    if todo:
+        with ThreadPoolExecutor(4) as ex:
+            for j, items, e in ex.map(run, todo):
+                if e:
+                    errs.append(e)
+                else:
+                    cache[key(j)] = (now, items)
     rows = {}
-    with ThreadPoolExecutor(6) as ex:
-        for cl, items in ex.map(one, [(c, d) for c in CL for d in (dcodes or (None,))]):
-            for it in items:
-                try:
-                    rows[it["ykiho"]] = {"name": it.get("yadmNm", ""), "cl": cl, "addr": it.get("addr", ""), "tel": it.get("telno", ""),
-                                         "url": it.get("hospUrl", ""), "lat": float(it["YPos"]), "lng": float(it["XPos"]),
-                                         "doctors": float(it["drTotCnt"]) if it.get("drTotCnt") else 0.0}
-                except (KeyError, ValueError):
-                    continue
-    return list(rows.values())
+    for j in jobs:
+        if key(j) not in cache:
+            continue
+        for it in cache[key(j)][1]:
+            try:
+                rows[it["ykiho"]] = {"name": it.get("yadmNm", ""), "cl": j[0], "addr": it.get("addr", ""), "tel": it.get("telno", ""),
+                                     "url": it.get("hospUrl", ""), "lat": float(it["YPos"]), "lng": float(it["XPos"]),
+                                     "doctors": float(it["drTotCnt"]) if it.get("drTotCnt") else 0.0}
+            except (KeyError, ValueError):
+                continue
+    return list(rows.values()), errs, len(jobs)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -249,22 +282,35 @@ st.caption(f"📍 {loc['label']} 기준")
 if d.get("depts"):
     st.markdown("**추천 진료과** &nbsp;" + "".join(f'<span class="chip">{html.escape(x)}</span>' for x in d["depts"]), unsafe_allow_html=True)
 
-err, rows = "", []
-with st.spinner("주변 병원을 찾는 중..."):
-    try:
-        codes = tuple(sorted({dept_code(x) for x in depts if dept_code(x)}))
-        if HIRA:
-            rows = fetch_hira(round(lat, 4), round(lng, 4), radius, codes)
-        elif KAKAO:
-            rows = fetch_kakao(round(lat, 4), round(lng, 4), radius, "HP8", f"{depts[0] if depts else ''} 병원".strip())
-        if KAKAO:
-            rows += fetch_kakao(round(lat, 4), round(lng, 4), radius, "PM9", "약국")
-    except Exception as e:  # noqa: BLE001
-        err = str(e)[:200]
+err, warn, rows = "", "", []
+with st.spinner("주변 병원을 찾는 중... (심평원 서버가 느리면 1분 정도 걸릴 수 있어요)"):
+    codes = tuple(sorted({dept_code(x) for x in depts if dept_code(x)}))
+    la, ln = round(lat, 4), round(lng, 4)
+    if HIRA:
+        rows, errs, njobs = fetch_hira(la, ln, radius, codes)
+        if errs and len(errs) == njobs:  # 전부 실패
+            err, rows = errs[0], []
+        elif errs:
+            warn = f"심평원 조회 {njobs}건 중 {len(errs)}건이 실패해서 일부 병원이 빠졌을 수 있어요."
+    if (not HIRA or err) and KAKAO:  # 심평원을 못 쓰면 카카오로 대신
+        try:
+            rows = fetch_kakao(la, ln, radius, "HP8", f"{depts[0] if depts else ''} 병원".strip())
+            if err:
+                warn = "심평원 서버가 응답하지 않아 카카오 데이터로 대신 보여드려요. 종별·의사 수 정보는 없어요."
+                err = ""
+        except Exception as e:  # noqa: BLE001
+            err = (err + " / " if err else "") + f"카카오 조회 실패: {str(e)[:100]}"
+    if KAKAO:
+        try:
+            rows += fetch_kakao(la, ln, radius, "PM9", "약국")
+        except Exception:  # noqa: BLE001
+            warn = (warn + " " if warn else "") + "약국 정보를 불러오지 못했어요."
 df = build(rows, lat, lng, radius)
 hosp = df[df["type"] != "약국"].reset_index(drop=True) if not df.empty else df
 if err:
     st.error(f"병원 데이터를 불러오지 못했어요: {err}")
+if warn:
+    st.warning(warn)
 
 left, right = st.columns([1.5, 1], gap="large")
 with left:

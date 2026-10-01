@@ -206,7 +206,7 @@ def analyze(region, text, sev, prefixes, depts):
             add(x[:2], 0.5)  # '통증이' → '통증'
     cand = candidates(df, kws)
 
-    table = cand.head(6).assign(가능성=None, 근거=None)  # Gemini가 실패했을 때의 대체 결과
+    table = cand.head(6).assign(가능성="", 근거="")  # Gemini가 실패했을 때의 대체 결과
     if not cand.empty and GEMINI:
         try:
             lst = "\n".join(f"{c}|{n}" for n, c in zip(cand["질환명"], cand["상병코드"]))
@@ -223,7 +223,7 @@ def analyze(region, text, sev, prefixes, depts):
                 cd = str(p.get("code", "")).strip()
                 if cd in by_code and cd not in seen:  # 후보에 있는 코드만 인정
                     seen.add(cd)
-                    lv = p.get("level") if p.get("level") in ("높음", "중간", "낮음") else None
+                    lv = p.get("level") if p.get("level") in ("높음", "중간", "낮음") else ""
                     rows.append({"질환명": by_code[cd], "상병코드": cd, "가능성": lv, "근거": str(p.get("reason", ""))[:200]})
             if rows:
                 table = pd.DataFrame(rows[:6])
@@ -378,7 +378,13 @@ def show_detail(nm, cd, depts, level=None, reason=None):
             go(nm, cd, depts)
 
 
+def _s(x):
+    """pandas 3에서는 빈 값이 NaN(float)으로 바뀌어 html.escape가 죽어요. 문자열이 아니면 빈 문자열로."""
+    return x if isinstance(x, str) else ""
+
+
 def row_html(i, nm, cd, level, reason):
+    nm, cd, level, reason = _s(nm), _s(cd), _s(level), _s(reason)
     lv = {"높음": "h", "중간": "m", "낮음": "l"}.get(level)
     badge = f'<span class="lv {lv}">가능성 {level}</span>' if lv else ""
     why = f'<div class="sub">{html.escape(reason)}</div>' if reason else ""
@@ -448,7 +454,7 @@ with right:
                         c1, c3 = st.columns([5, 0.9], vertical_alignment="center")
                         c1.markdown(row_html(i, r["질환명"], r["상병코드"], r["가능성"], r["근거"]), unsafe_allow_html=True)
                         if c3.button("상세", key=f"d_{r['상병코드']}_{i}", use_container_width=True):
-                            st.session_state["detail"] = (r["질환명"], r["상병코드"], r["가능성"], r["근거"])
+                            st.session_state["detail"] = (r["질환명"], r["상병코드"], _s(r["가능성"]), _s(r["근거"]))
                 dt = st.session_state.get("detail")
                 if dt and dt[1] in set(table["상병코드"]):
                     show_detail(dt[0], dt[1], rdepts, dt[2], dt[3])
