@@ -12,9 +12,9 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 try:
-    from streamlit_js_eval import get_geolocation
+    from streamlit_js_eval import get_geolocation, streamlit_js_eval
 except Exception:  # noqa: BLE001
-    get_geolocation = None
+    get_geolocation = streamlit_js_eval = None
 
 from kok_common import (bars, cnt, env, esc, hero, hira_get, kpis, link_cards, open_badge, setup, skel, stack_bars,
                     table_html, topbar, week_hours)
@@ -370,6 +370,16 @@ def map_html(center, radius, df):
             f'<script>{MAP_JS.replace("__DATA__", data)}</script></body></html>')
 
 
+def ip_location():
+    if "ip_loc" not in st.session_state and streamlit_js_eval:
+        r = streamlit_js_eval(js_expressions="fetch('https://ipwho.is/').then(r=>r.json()).catch(()=>null)", key=f"ipgeo{st.session_state.get('geo_n', 0)}")
+        if isinstance(r, dict) and r.get("success") and r.get("latitude") is not None:
+            where = " ".join(x for x in (r.get("region"), r.get("city")) if x)
+            st.session_state["ip_loc"] = {"lat": float(r["latitude"]), "lng": float(r["longitude"]), "label": f"내 위치 (접속 IP 기준 대략{' · ' + where if where else ''})"}
+            st.rerun()
+    return st.session_state.get("ip_loc")
+
+
 def current_location():
     if "loc" not in st.session_state and get_geolocation:
         g = get_geolocation(component_key=f"geo{st.session_state.get('geo_n', 0)}")
@@ -377,13 +387,18 @@ def current_location():
             st.session_state["loc"] = {"lat": g["coords"]["latitude"], "lng": g["coords"]["longitude"], "label": "내 위치"}
             st.rerun()
         elif isinstance(g, dict) and "error" in g:
-            st.session_state["loc"] = dict(DEFAULT_LOC)
-            st.warning("위치 권한이 거부돼서 기본 위치로 보여드려요. 브라우저 주소창의 위치 권한을 허용하거나 아래에서 주소를 검색해 주세요.")
+            st.session_state["geo_err"] = True
     loc = st.session_state.get("loc")
     if loc is None:
-        if get_geolocation:
-            st.info("현재 위치를 확인하는 중이에요. 브라우저에서 위치 권한을 '허용'해 주세요. (안 되면 아래에서 주소를 검색하세요)")
-        loc = {**DEFAULT_LOC, "label": "위치 확인 중 (임시: 서울시청)"}
+        loc = ip_location()
+        if loc:
+            st.info("브라우저 위치(GPS)를 못 받아서 접속 IP로 대략 찾았어요. 더 정확하게 하려면 위치 권한을 허용하고 '내 위치'를 누르거나 주소를 검색하세요.")
+        else:
+            if st.session_state.get("geo_err"):
+                st.warning("위치를 확인하지 못해 기본 위치로 보여드려요. 아래에서 주소를 검색해 주세요.")
+            elif get_geolocation:
+                st.info("현재 위치를 확인하는 중이에요. 브라우저에서 위치 권한을 '허용'해 주세요. (안 되면 아래에서 주소를 검색하세요)")
+            loc = {**DEFAULT_LOC, "label": "위치 확인 중 (임시: 서울시청)"}
     return loc
 
 
@@ -600,7 +615,8 @@ with st.container(key="filters"):
         depts = st.multiselect("진료과", sorted(set(DEPT) | set(default)), default=default)
     with c4:
         if st.button("내 위치", help="현재 위치로 이동", use_container_width=True):
-            st.session_state.pop("loc", None)
+            for k in ("loc", "ip_loc", "geo_err"):
+                st.session_state.pop(k, None)
             st.session_state["geo_n"] = st.session_state.get("geo_n", 0) + 1
             st.rerun()
     radius = st.pills("검색 반경", [1, 2, 3, 5, 10, 20, 30], format_func=lambda x: f"{x}km", default=3, selection_mode="single") or 3
