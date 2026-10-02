@@ -11,7 +11,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-from common import bars, donut, env, esc, hero, hira_get, kpis, setup, skel, table_html, topbar, vbars
+from kok_common import bars, donut, env, esc, hero, hira_get, kpis, setup, skel, table_html, topbar, vbars
 
 setup("콕콕")
 

@@ -16,7 +16,7 @@ try:
 except Exception:  # noqa: BLE001
     get_geolocation = None
 
-from common import (bars, cnt, env, esc, hero, hira_get, kpis, link_cards, open_badge, setup, skel, stack_bars,
+from kok_common import (bars, cnt, env, esc, hero, hira_get, kpis, link_cards, open_badge, setup, skel, stack_bars,
                     table_html, topbar, week_hours)
 
 setup("병원 찾기", """
