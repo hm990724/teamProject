@@ -171,31 +171,30 @@ def hira_one(lat, lng, radius_km, cl, dept):
     return out, total
 
 
-def fetch_hira(lat, lng, radius_km, dept_codes):
-    cache, now = st.session_state.setdefault("hira_cache2", {}), time.time()
-    jobs = [(c, d) for c in CL for d in (dept_codes or (None,))]
+@st.cache_data(ttl=1800, show_spinner=False)
+def hira_job(lat, lng, radius_km, cl, dept):
+    return hira_one(lat, lng, radius_km, cl, dept)
 
-    def key(j):
-        return (lat, lng, radius_km) + j
+
+def fetch_hira(lat, lng, radius_km, dept_codes):
+    jobs = [(c, d) for c in CL for d in (dept_codes or (None,))]
 
     def run(job):
         try:
-            return job, *hira_one(lat, lng, radius_km, *job), None
+            return job, *hira_job(lat, lng, radius_km, *job), None
         except Exception as e:  # noqa: BLE001
             return job, [], 0, str(e)[:140]
 
-    errs = []
-    todo = [j for j in jobs if key(j) not in cache or now - cache[key(j)][0] > 1800]
-    if todo:
-        with ThreadPoolExecutor(4) as ex:
-            for job, items, total, err in ex.map(run, todo):
-                if err:
-                    errs.append(err)
-                else:
-                    cache[key(job)] = (now, items, total)
+    errs, got = [], {}
+    with ThreadPoolExecutor(2) as ex:
+        for job, items, total, err in ex.map(run, jobs):
+            if err:
+                errs.append(err)
+            else:
+                got[job] = (items, total)
     rows, trunc = {}, 0
     for job in jobs:
-        _, items, total = cache.get(key(job), (0, [], 0))
+        items, total = got.get(job, ([], 0))
         trunc += int(total > len(items))
         for it in items:
             try:
@@ -536,7 +535,7 @@ def show_compare(hosp, depts):
 
         rows, errs = [], []
         try:
-            with ThreadPoolExecutor(4) as ex:
+            with ThreadPoolExecutor(2) as ex:
                 for (_, name, typ, dist), by, err in ex.map(run, job_t):
                     if err:
                         errs.append(err)
