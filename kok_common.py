@@ -1,6 +1,7 @@
 import html
 import os
 import re
+import time
 import xml.etree.ElementTree as ET
 from urllib.parse import unquote
 
@@ -419,17 +420,25 @@ def _hira_once(path, params, key, timeout, scheme):
 
 
 def hira_get(path, params, key, timeout=15):
-    tries = [_OK[path]] if path in _OK else [(p, s) for p in _variants(path) for s in ("https", "http")]
     first = None
-    for p, s in tries:
-        try:
-            out = _hira_once(p, params, key, timeout, s)
-            _OK[path] = (p, s)
-            return out
-        except requests.exceptions.RequestException as e:
-            first = first or e
-        except RuntimeError as e:
-            first = first or e
-            if not re.search(r"NO_OPENAPI|코드 (12|04|05)\)|HTTP 5\d\d", str(e)):
-                raise
+    for n in range(3):
+        if path in _OK:
+            tries = [_OK[path]]
+        elif n == 0:
+            tries = [(p, s) for p in _variants(path) for s in ("https", "http")]
+        else:
+            tries = [(path, "https")]
+        for p, s in tries:
+            try:
+                out = _hira_once(p, params, key, timeout, s)
+                _OK[path] = (p, s)
+                return out
+            except requests.exceptions.RequestException as e:
+                first = first or e
+            except RuntimeError as e:
+                first = first or e
+                if not re.search(r"NO_OPENAPI|코드 (12|04|05|23)\)|HTTP 5\d\d", str(e)):
+                    raise
+        if n < 2:
+            time.sleep(0.8 * (n + 1))
     raise first
