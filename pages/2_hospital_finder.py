@@ -371,7 +371,7 @@ def map_html(center, radius, df):
 
 def ip_location():
     if "ip_loc" not in st.session_state and streamlit_js_eval:
-        r = streamlit_js_eval(js_expressions="fetch('https://ipwho.is/').then(r=>r.json()).catch(()=>null)", key=f"ipgeo{st.session_state.get('geo_n', 0)}")
+        r = streamlit_js_eval(js_expressions="fetch('https://ipwho.is/').then(r=>r.json()).then(j=>j.success?j:Promise.reject()).catch(()=>fetch('https://ipapi.co/json/').then(r=>r.json()).then(j=>({success:!!j.latitude,latitude:j.latitude,longitude:j.longitude,city:j.city,region:j.region}))).catch(()=>null)", key=f"ipgeo{st.session_state.get('geo_n', 0)}")
         if isinstance(r, dict) and r.get("success") and r.get("latitude") is not None:
             where = " ".join(x for x in (r.get("region"), r.get("city")) if x)
             st.session_state["ip_loc"] = {"lat": float(r["latitude"]), "lng": float(r["longitude"]), "label": f"내 위치 (접속 IP 기준 대략{' · ' + where if where else ''})"}

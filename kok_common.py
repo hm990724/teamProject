@@ -202,6 +202,19 @@ button[data-testid="stBaseButton-segmented_controlActive"],button[data-testid="s
 .stAlert{border-radius:10px;animation:rise .4s var(--ease) both}
 .st-key-bodycard,[data-testid="stVerticalBlockBorderWrapper"]:has(.st-key-bodycard){background:radial-gradient(closest-side at 50% 46%,rgba(29,95,209,.14),rgba(29,95,209,0) 78%),radial-gradient(#C5D5E8 1px,transparent 1.3px) 0 0/20px 20px,linear-gradient(180deg,#F3F8FE,#FFFFFF)!important;overflow:hidden}
 .st-key-bodycard iframe{background:transparent!important}
+@media(max-width:640px){
+.block-container{padding-left:.9rem;padding-right:.9rem}
+[data-testid="stHorizontalBlock"]{flex-wrap:wrap!important;gap:.5rem!important}
+[data-testid="stColumn"],[data-testid="column"]{min-width:100%!important;flex:1 1 100%!important;width:100%!important}
+.hc-top{flex-wrap:wrap}.hc-name,.hc-meta,.kpi .n,.kpi .s,.bl,.rgn,.sub,.lk b,.lk span{word-break:keep-all;overflow-wrap:anywhere}
+.hc-dist{margin-left:0}
+.br{grid-template-columns:84px 1fr 70px;gap:8px}.sr{grid-template-columns:84px 1fr 52px;gap:8px}
+.bv{font-size:.78rem}.bv small{display:none}
+.kpis{grid-template-columns:repeat(2,1fr)}
+.topbar{flex-wrap:wrap}.topbar .tb{margin-left:0}
+.steps span{min-width:46%}
+iframe[height="640"]{height:min(640px,68vh)!important}
+}
 """
 
 ECG = ('<svg viewBox="0 0 420 90" aria-hidden="true"><path d="M0 50 H110 L124 50 L136 18 L152 80 L166 30 L176 50 H250 L262 50 L274 26 '
