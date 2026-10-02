@@ -693,7 +693,7 @@ def show_result(res, region):
         show_detail(detail[0], detail[1], depts, detail[2], detail[3], tag="r")
 
 
-topbar("콕콕", "건강 길잡이")
+topbar("콕콕", "맞춤형 의료 서비스")
 hero("SYMPTOM GUIDE", "어디가 불편하세요?\n부위를 고르면 진료과와 병원을 안내해요", "", ("질환 통계", "진료과 추천", "병원·의료진 비교"))
 st.markdown('<div class="steps"><span><b>1</b>부위 선택</span><span><b>2</b>증상 입력</span><span><b>3</b>질환 확인</span><span><b>4</b>병원 찾기</span></div>',
             unsafe_allow_html=True)
