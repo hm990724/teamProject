@@ -88,6 +88,7 @@ TYPE_COLORS = {**dict(CL.values()), PHARM[0]: PHARM[1]}
 UNKNOWN = ("종별 미상", "#B0B8C1")
 COLS = ["name", "cl", "addr", "tel", "url", "lat", "lng", "ykiho", "dr", "sp", "gp", "tr"]
 MAX_PAGES = 5
+MAP_ZOOM = 17
 HOSP_CL = ("01", "11", "21")
 DETAIL_VERSIONS = ("2.8", "2.7")
 DD_OPS = [("getSpcSbjtSdrInfo", ("dtlSdrCnt", "sdrCnt", "dgsbjtPrSdrCnt")), ("getDgsbjtInfo", ("dgsbjtPrSdrCnt", "dtlSdrCnt", "sdrCnt"))]
@@ -341,27 +342,31 @@ const s=document.createElement('script');s.src=urls[i];s.onload=cb;s.onerror=()=
 const css=document.createElement('link');css.rel='stylesheet';css.href='https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css';document.head.appendChild(css);
 loadJs(['https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js','https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js','https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'],()=>{try{start();}catch(e){msg('지도 오류: '+e.message);}});
 function start(){
- const map=L.map('m');const near=D.p.filter(p=>p.rank&&p.rank<=5).map(p=>[p.lat,p.lng]).concat([D.c]);
- map.fitBounds(near.length>1?near:L.latLng(D.c[0],D.c[1]).toBounds(D.r*2000),{padding:[40,40],maxZoom:16});
+ const map=L.map('m',{zoomSnap:.5});
+ const near=D.p.filter(p=>p.rank===1).map(p=>[p.lat,p.lng]).concat([D.c]);
+ if(near.length>1)map.fitBounds(near,{padding:[70,70],maxZoom:D.z});else map.setView(D.c,D.z);
  const tiles=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(map);
  let errors=0;tiles.on('tileerror',()=>{if(++errors===3)msg('지도 타일 서버에 접속하지 못했어요.');});
  L.circle(D.c,{radius:D.r*1000,color:'#3182F6',weight:1,fillOpacity:.04}).addTo(map);
- L.circleMarker(D.c,{radius:8,color:'#fff',weight:3,fillColor:'#191F28',fillOpacity:1}).addTo(map).bindTooltip('내 위치');
- D.p.forEach(p=>{const top=p.rank&&p.rank<=5,s=top?26:14;
-  const icon=L.divIcon({className:'',iconSize:[s,s],iconAnchor:[s/2,s/2],html:'<div class="pin'+(top?' top':'')+'" style="width:'+s+'px;height:'+s+'px;border-radius:50%;background:'+p.color+';border:2px solid #fff;color:#fff;font:700 13px/'+(s-4)+'px sans-serif;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.35)">'+(top?p.rank:'')+'</div>'});
+ L.circleMarker(D.c,{radius:10,color:'#fff',weight:3,fillColor:'#1E6FD9',fillOpacity:1}).addTo(map).bindTooltip('내 위치',{permanent:true,direction:'top',offset:[0,-8]});
+ D.p.forEach(p=>{const top=p.rank&&p.rank<=5,s=top?30:16;
+  const icon=L.divIcon({className:'',iconSize:[s,s],iconAnchor:[s/2,s/2],html:'<div class="pin'+(top?' top':'')+'" style="width:'+s+'px;height:'+s+'px;border-radius:50%;background:'+p.color+';border:2px solid #fff;color:#fff;font:700 14px/'+(s-4)+'px sans-serif;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.35)">'+(top?p.rank:'')+'</div>'});
   L.marker([p.lat,p.lng],{icon}).addTo(map).bindPopup(p.html);});
+ document.getElementById('me').onclick=()=>map.setView(D.c,D.z);
  setTimeout(()=>map.invalidateSize(),300);}
 """
 MAP_CSS = ("html,body,#m{height:100%;margin:0;border-radius:20px}#msg{position:absolute;left:10px;bottom:10px;z-index:9999;background:#fff;color:#b42318;"
            "padding:8px 12px;border-radius:8px;font:13px sans-serif;box-shadow:0 1px 6px rgba(0,0,0,.25);display:none;max-width:80%}"
+           "#me{position:absolute;right:10px;top:10px;z-index:9999;background:#1E6FD9;color:#fff;border:0;border-radius:99px;padding:8px 14px;font:700 13px sans-serif;"
+           "box-shadow:0 4px 12px rgba(30,111,217,.35);cursor:pointer}"
            ".pin.top{animation:pl 2s infinite}@keyframes pl{0%{box-shadow:0 0 0 0 rgba(30,111,217,.5)}100%{box-shadow:0 0 0 14px rgba(30,111,217,0)}}")
 
 
 def map_html(center, radius, df):
     pts = [{"lat": r["lat"], "lng": r["lng"], "color": r["color"], "rank": None if r["type"] == "약국" else i + 1,
             "html": f'<b>{esc(r["name"])}</b><br>{r["type"]} · {r["dist"]:.1f}km<br>{esc(r["addr"])}'} for i, r in df.iterrows()]
-    data = json.dumps({"c": center, "r": radius, "p": pts[:120]}, ensure_ascii=False).replace("</", "<\\/")
-    return (f'<html><head><meta charset="utf-8"><style>{MAP_CSS}</style></head><body><div id="m"></div><div id="msg"></div>'
+    data = json.dumps({"c": center, "r": radius, "z": MAP_ZOOM, "p": pts[:120]}, ensure_ascii=False).replace("</", "<\\/")
+    return (f'<html><head><meta charset="utf-8"><style>{MAP_CSS}</style></head><body><div id="m"></div><button id="me">내 위치로</button><div id="msg"></div>'
             f'<script>{MAP_JS.replace("__DATA__", data)}</script></body></html>')
 
 
@@ -598,7 +603,7 @@ with st.container(key="filters"):
             st.session_state.pop("loc", None)
             st.session_state["geo_n"] = st.session_state.get("geo_n", 0) + 1
             st.rerun()
-    radius = st.pills("검색 반경", [3, 5, 10, 20, 30], format_func=lambda x: f"{x}km", default=10, selection_mode="single") or 10
+    radius = st.pills("검색 반경", [1, 2, 3, 5, 10, 20, 30], format_func=lambda x: f"{x}km", default=3, selection_mode="single") or 3
 
 lat, lng = loc["lat"], loc["lng"]
 st.caption(f"{loc['label']} 기준")
@@ -620,7 +625,7 @@ if warn:
 left, right = st.columns([1.5, 1], gap="large")
 with left:
     components.html(map_html([lat, lng], radius, pd.concat([hosp.head(60), pharmacies.head(20)]) if not df.empty else df), height=640)
-    st.caption("지도의 숫자는 가까운 순위 상위 5곳이에요. 점을 누르면 상세가 보여요.")
+    st.caption("지도는 내 위치와 가장 가까운 병원이 보이도록 최대한 확대돼요. 숫자는 가까운 순위 상위 5곳이고, 점을 누르면 상세가 보여요.")
 with right:
     if hosp.empty:
         st.markdown('<div class="empty"><b>반경 안에서 병원을 찾지 못했어요</b><br>반경을 넓히거나 진료과를 바꿔 보세요.</div>', unsafe_allow_html=True)
