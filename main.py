@@ -12,7 +12,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-from common import bars, donut, env, hira_get, kpis, setup, skel, table_html, topbar, vbars
+from common import bars, donut, env, hero, hira_get, kpis, setup, skel, table_html, topbar, vbars
 
 setup("콕콕")
 
@@ -536,15 +536,11 @@ def show_stat(label, info, age=None, sex=None):
     if not drawn:
         st.caption("차트로 그릴 수 있는 환자 수 항목이 없어서 표로 보여드려요.")
     with st.expander("원본 표 보기"):
-        names, used = {}, set()
+        names = {}
         for c in cats + meas:
             n = label_of(c)
-            if n in used:  # 같은 한글명이 겹치면 원래 이름을 덧붙여 구분
-                n = f"{n}({c})"
-            used.add(n)
-            names[c] = n
+            names[c] = f"{n}({c})" if n in names.values() else n  # 같은 한글명이 겹치면 원래 이름을 덧붙여 구분
         show = df[cats + meas].rename(columns=names)
-        show = show.loc[:, ~show.columns.duplicated()]
         st.markdown(table_html(show, scroll=True), unsafe_allow_html=True)
     st.caption(f"{info['year']}년 · 건강보험 · 주상병 기준 · 출처: 건강보험심사평가원 질병정보서비스 · 환자 수 기준이며 인구 대비 비율이 아니에요.")
 
@@ -556,7 +552,6 @@ def show_detail(name, code, depts, level=None, reason=None, tag="a"):
         st.markdown(f"#### {name} · `{code}`")
         if level or reason:
             st.caption(f"{('가능성 ' + level) if level else ''} {('· ' + reason) if reason else ''}")
-        # 통계 영역에서 오류가 나도 버튼이 사라지지 않도록 맨 위에 둔다
         if st.button("가까운 병원 보기", type="primary", use_container_width=True, key=f"go_{tag}_{code}"):
             go(name, code, depts)
         ph = st.empty()
@@ -607,7 +602,7 @@ def row_html(i, name, code, level, reason, kws, agetxt):
     badge = f'<span class="lv {cls}">가능성 {level}</span>' if cls else ""
     why = f'<div class="sub">{html.escape(reason)}</div>' if reason else ""
     chips = "".join(f'<span class="chip g">{html.escape(k)}</span>' for k in (kws if isinstance(kws, list) else []))
-    ag = f'<div class="sub" style="color:#1B64DA;font-weight:600;margin-top:2px">{html.escape(agetxt)}</div>' if agetxt else ""
+    ag = f'<div class="sub" style="color:var(--bl2);font-weight:600;margin-top:2px">{html.escape(agetxt)}</div>' if agetxt else ""
     return (f'<div class="rk" style="--i:{i}"><span class="rn{" top" if i == 0 else ""}">{i + 1}</span>'
             f'<div style="min-width:0"><b>{html.escape(name)}</b>{badge}<div class="sub">{html.escape(code)}</div>{why}{ag}'
             f'<div style="margin-top:6px">{chips}</div></div></div>')
@@ -700,23 +695,31 @@ def show_result(res, region):
 
 
 # ───────────────────────── 페이지 ─────────────────────────
-topbar("콕콕", "증상 분석 · 질환 통계 · 가까운 병원 찾기")
+topbar("콕콕", "건강 길잡이")
+hero("SYMPTOM GUIDE", "어디가 불편하세요?\n부위를 고르면 진료과와 병원을 안내해요", "", ("질환 통계", "진료과 추천", "병원·의료진 비교"))
 st.markdown('<div class="steps"><span><b>1</b>부위 선택</span><span><b>2</b>증상 입력</span><span><b>3</b>질환 확인</span><span><b>4</b>병원 찾기</span></div>',
             unsafe_allow_html=True)
 
 left, right = st.columns([1, 1.3], gap="large")
 with left:
-    val = body_map(sel=st.session_state.get("region"), key="body", default=None)
+    with st.container(border=True, key="bodycard"):
+        val = body_map(sel=st.session_state.get("region"), key="body", default=None)
     if val and val.get("region"):
         st.session_state["region"] = val["region"]
 region = st.session_state.get("region")
 
 with right:
+    if st.button("병원 바로 찾기", key="nav_hosp", use_container_width=True):
+        if region in REGIONS and HOSPITAL_FILE.exists():
+            r_ = st.session_state.get("res")
+            d_ = r_[1]["depts"] if r_ and r_[0] == region else REGIONS[region][2]
+            st.session_state["pick_disease"] = {"n": REGIONS[region][0] + " 부위", "c": "", "depts": list(d_)}
+        else:
+            st.session_state.pop("pick_disease", None)
+        st.switch_page(HOSPITAL_PAGE)
     if region not in REGIONS:
         st.markdown('<div class="panel"><b>불편한 부위를 눌러 주세요</b><br>'
                     '<span class="sub">왼쪽 몸 그림에서 앞면·뒷면을 바꿔 가며 고를 수 있어요.</span></div>', unsafe_allow_html=True)
-        if st.button("병원 바로 찾기", use_container_width=True):
-            st.switch_page(HOSPITAL_PAGE)
         with st.expander("질환 이름으로 바로 찾기 (희귀질환 포함)"):
             disease_search()
     else:
