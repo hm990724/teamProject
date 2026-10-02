@@ -44,7 +44,26 @@ setup("병원 찾기", """
 .empty{background:#fff;border:1px dashed #C9D8EA;border-radius:16px;padding:28px;text-align:center;color:var(--sb);line-height:1.7}
 button[data-testid="stBaseButton-primary"]{background:linear-gradient(135deg,#1E6FD9,#17A2A8)!important;border:0!important;transition:transform .15s,box-shadow .25s!important}
 button[data-testid="stBaseButton-primary"]:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(30,111,217,.28)}
-iframe{border-radius:16px}
+.hero{background:linear-gradient(120deg,#0B2545,#123A73 40%,#1D5FD1 75%,#17A2A8)!important;background-size:220% 220%!important;animation:rise .6s var(--ease) both,gm 14s ease-in-out infinite!important}
+@keyframes gm{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+.st-key-filters{background:rgba(255,255,255,.86);backdrop-filter:blur(10px);border:1px solid #DCE8F7;border-radius:18px;padding:16px 18px 6px;margin:4px 0 14px;
+ box-shadow:0 10px 30px rgba(16,42,67,.08);animation:rise .6s .1s var(--ease) both}
+[data-testid="stPills"] button{border-radius:99px!important;transition:background .2s,color .2s,transform .2s var(--ease),box-shadow .25s!important}
+[data-testid="stPills"] button:hover{transform:translateY(-2px)}
+button[data-testid="stBaseButton-pillsActive"],[data-testid="stPills"] button[aria-checked="true"],[data-testid="stPills"] button[aria-pressed="true"]{
+ background:linear-gradient(135deg,#1E6FD9,#17A2A8)!important;border-color:transparent!important;box-shadow:0 6px 16px rgba(30,111,217,.30)!important}
+button[data-testid="stBaseButton-pillsActive"] *,[data-testid="stPills"] button[aria-checked="true"] *,[data-testid="stPills"] button[aria-pressed="true"] *{color:#fff!important}
+[data-baseweb="tag"]{background:linear-gradient(135deg,#1E6FD9,#17A2A8)!important;border-radius:99px!important;animation:pop .35s var(--ease) both}
+[data-baseweb="tag"] span,[data-baseweb="tag"] svg{color:#fff!important;fill:#fff!important}
+[data-baseweb="tab-list"]{gap:6px}
+[data-baseweb="tab"]{border-radius:10px 10px 0 0;padding:10px 16px;transition:background .2s,color .2s}
+[data-baseweb="tab"]:hover{background:#F1F7FE}[data-baseweb="tab"][aria-selected="true"]{color:#1B5FC1}
+.prox{display:flex;align-items:center;gap:8px;margin-top:10px;position:relative;z-index:1;font-size:.72rem;font-weight:600;color:var(--sb)}
+.prox span{flex:1;height:5px;border-radius:99px;background:#EDF2F8;overflow:hidden}
+.prox i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--acc),#17A2A8);transform-origin:left;animation:grow 1s var(--ease) both}
+*::-webkit-scrollbar{width:8px;height:8px}*::-webkit-scrollbar-thumb{background:#C9D8EA;border-radius:99px}
+iframe[height="640"]{border-radius:16px;border:1px solid #E3ECF6;box-shadow:0 10px 30px rgba(16,42,67,.10)}
+@supports (animation-timeline:view()){.chart,.tw,.kpis,.lks{animation:rise linear both!important;animation-timeline:view();animation-range:entry 5% cover 28%}}
 """)
 
 KAKAO, HIRA = env("KAKAO_REST_API_KEY"), env("HIRA_SERVICE_KEY")
@@ -65,6 +84,7 @@ DEPT = {"내과": "01", "신경과": "02", "정신건강의학과": "03", "외�
         "피부과": "14", "비뇨의학과": "15", "영상의학과": "16", "재활의학과": "21", "가정의학과": "23", "응급의학과": "24"}
 CL = {"01": ("상급종합", "#1E6FD9"), "11": ("종합병원", "#0E9F8E"), "21": ("병원", "#F59E0B"), "31": ("의원", "#7C5CE0")}
 PHARM = ("약국", "#F76B9C")
+TYPE_COLORS = {**dict(CL.values()), PHARM[0]: PHARM[1]}
 UNKNOWN = ("종별 미상", "#B0B8C1")
 COLS = ["name", "cl", "addr", "tel", "url", "lat", "lng", "ykiho", "dr", "sp", "gp", "tr"]
 MAX_PAGES = 5
@@ -300,6 +320,8 @@ def card(r, rank=None, i=0):
         segs = [(r["sp"], "#1D5FD1"), (r["gp"], "#6FA0EA"), (r["tr"], "#A9C6F2"), (max(tot - r["sp"] - r["gp"] - r["tr"], 0), "#D9E2EE")]
         doc = (f'<div class="hc-meta">의사 {int(tot)}명' + (f' · 전문의 {int(r["sp"])}명' if r["sp"] else "") + "</div>"
                '<div class="mini">' + "".join(f'<i style="width:{v / tot * 100:.1f}%;background:{c}"></i>' for v, c in segs if v > 0) + "</div>")
+    if rank:
+        doc += f'<div class="prox"><b>근접도</b><span><i style="width:{max(6, (1 - r["dist"] / radius) * 100):.0f}%"></i></span></div>'
     links = f'<a href="tel:{esc(r["tel"])}">전화</a>' if r["tel"] else ""
     links += f'<a target="_blank" href="https://map.kakao.com/link/to/{quote(r["name"])},{r["lat"]},{r["lng"]}">길찾기</a>'
     if r["url"]:
@@ -442,8 +464,9 @@ def show_doctors(hosp):
     t = pd.DataFrame({"병원": h["name"], "종별": h["type"], "거리": h["dist"], "의사": h["dr"], "전문의": h["sp"], "전문의 비율": ratio})
     with st.expander("표로 보기"):
         st.markdown(table_html(t, fmts={"거리": lambda v: f"{v:.1f}km", "의사": lambda v: f"{v:,.0f}명", "전문의": lambda v: f"{v:,.0f}명",
-                                        "전문의 비율": lambda v: f"{v:.0f}%"}, heat={"전문의 비율": 100}), unsafe_allow_html=True)
-        st.caption("전문의 비율 = 의과 전문의 ÷ 의사 총수 (건강보험심사평가원 병원정보서비스 기준)")
+                                        "전문의 비율": lambda v: f"{v:.0f}%"}, heat={"의사": None, "전문의": None, "전문의 비율": 100},
+                               rank=True, chips={"종별": TYPE_COLORS}), unsafe_allow_html=True)
+        st.caption("순번은 가까운 순이에요. 막대는 표 안에서 가장 큰 값 대비 길이이고, 전문의 비율 = 의과 전문의 ÷ 의사 총수예요. (건강보험심사평가원 병원정보서비스 기준)")
     if r["ykiho"] and DETAIL_ON:
         ph = st.empty()
         ph.markdown(skel(2), unsafe_allow_html=True)
@@ -534,7 +557,8 @@ def show_compare(hosp, depts):
                       "해당 과 비중": (d["sel"] / d["all"].replace(0, float("nan"))) * 100})
     st.markdown('<div style="height:10px"></div>' + table_html(t, fmts={"거리": lambda v: f"{v:.1f}km", "선택 진료과 전문의": lambda v: f"{v:,.0f}명",
                                                                        "전체 전문의": lambda v: f"{v:,.0f}명", "해당 과 비중": lambda v: f"{v:.0f}%"},
-                                                         heat={"해당 과 비중": 100}), unsafe_allow_html=True)
+                                                         heat={"선택 진료과 전문의": None, "전체 전문의": None, "해당 과 비중": 100},
+                                                         rank=True, chips={"종별": TYPE_COLORS}), unsafe_allow_html=True)
     st.caption("진료과목별 전문의 수는 건강보험심사평가원 의료기관별상세정보서비스 기준이에요. 의사 개인의 이름·경력은 공개 API에 없어서 병원별 링크로 연결해요.")
 
 
@@ -553,27 +577,28 @@ if picked:
                 + (f"<span style='color:#6B7684;font-size:.9rem'>상병코드 {esc(picked.get('c', ''))}</span>" if picked.get("c") else ""), unsafe_allow_html=True)
 
 loc = current_location()
-c1, c2, c3, c4 = st.columns([1.4, 1.4, 1.6, 0.6], vertical_alignment="bottom")
-with c1:
-    q = st.text_input("지역 · 주소 검색", placeholder=f"현재: {loc['label']}").strip()
-with c2:
-    found = place_search(q) if len(q) >= 2 else []
-    chosen = st.selectbox("검색 결과", [f["label"] for f in found], index=None, placeholder="결과에서 선택") if found else None
-    if chosen:
-        place = next(f for f in found if f["label"] == chosen)
-        if place["label"] != loc["label"]:
-            st.session_state["loc"] = place
+with st.container(key="filters"):
+    c1, c2, c3, c4 = st.columns([1.4, 1.4, 1.6, 0.6], vertical_alignment="bottom")
+    with c1:
+        q = st.text_input("지역 · 주소 검색", placeholder=f"현재: {loc['label']}").strip()
+    with c2:
+        found = place_search(q) if len(q) >= 2 else []
+        chosen = st.selectbox("검색 결과", [f["label"] for f in found], index=None, placeholder="결과에서 선택") if found else None
+        if chosen:
+            place = next(f for f in found if f["label"] == chosen)
+            if place["label"] != loc["label"]:
+                st.session_state["loc"] = place
+                st.rerun()
+    with c3:
+        recommended = picked.get("depts", [])
+        default = [x for x in recommended if base_dept(x)] or ["내과"]
+        depts = st.multiselect("진료과", sorted(set(DEPT) | set(default)), default=default)
+    with c4:
+        if st.button("내 위치", help="현재 위치로 이동", use_container_width=True):
+            st.session_state.pop("loc", None)
+            st.session_state["geo_n"] = st.session_state.get("geo_n", 0) + 1
             st.rerun()
-with c3:
-    recommended = picked.get("depts", [])
-    default = [x for x in recommended if base_dept(x)] or ["내과"]
-    depts = st.multiselect("진료과", sorted(set(DEPT) | set(default)), default=default)
-with c4:
-    if st.button("내 위치", help="현재 위치로 이동", use_container_width=True):
-        st.session_state.pop("loc", None)
-        st.session_state["geo_n"] = st.session_state.get("geo_n", 0) + 1
-        st.rerun()
-radius = st.pills("검색 반경", [3, 5, 10, 20, 30], format_func=lambda x: f"{x}km", default=10, selection_mode="single") or 10
+    radius = st.pills("검색 반경", [3, 5, 10, 20, 30], format_func=lambda x: f"{x}km", default=10, selection_mode="single") or 10
 
 lat, lng = loc["lat"], loc["lng"]
 st.caption(f"{loc['label']} 기준")

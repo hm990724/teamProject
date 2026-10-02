@@ -151,7 +151,17 @@ h1,h2,h3,h4{color:var(--tx);letter-spacing:-.03em}
 .tbl th{position:sticky;top:0;background:#F3F6FA;color:var(--sb);font-weight:700;text-align:left;padding:12px 16px;white-space:nowrap;z-index:1;border-bottom:1px solid var(--ln)}
 .tbl td{padding:12px 16px;border-top:1px solid #EEF2F7;white-space:nowrap}
 .tbl td.num,.tbl th.num{text-align:right;font-variant-numeric:tabular-nums}
-.tbl tbody tr{transition:background .15s}.tbl tbody tr:hover{background:#F7F9FC}
+.tbl tbody tr{transition:background .15s;animation:fade .5s var(--ease) both;animation-delay:calc(var(--i,0)*35ms)}.tbl tbody tr:hover{background:#F3F8FF}
+.tbl tbody tr:nth-child(even){background:#FAFCFE}.tbl tbody tr:nth-child(even):hover{background:#F3F8FF}
+.tbl td.nm{font-weight:700}
+.tbl th.rk0,.tbl td.rk0{width:46px;padding-right:0;text-align:center}
+.tbl td.rk0 b{display:inline-flex;width:26px;height:26px;border-radius:50%;background:#EEF4FB;color:var(--sb);font-size:.8rem;align-items:center;justify-content:center}
+.tbl tbody tr:first-child td.rk0 b{background:linear-gradient(135deg,#1E6FD9,#17A2A8);color:#fff;box-shadow:0 3px 8px rgba(30,111,217,.3)}
+.tc{display:inline-block;padding:3px 11px;border-radius:99px;font-size:.76rem;font-weight:700}
+.db{display:flex;flex-direction:column;gap:5px;min-width:96px}.tbl td.num .db{align-items:flex-end}
+.db b{font-weight:700}
+.db span{display:block;width:96px;height:5px;border-radius:99px;background:#EAF0F6;overflow:hidden}
+.db i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#6FA0EA,#1D5FD1);transform-origin:left;animation:grow .9s var(--ease) both}
 .sk{display:flex;flex-direction:column;gap:12px;padding:6px 0}
 .sk i{display:block;height:64px;border-radius:10px;background:linear-gradient(90deg,#E3E9F1 25%,#F3F6FA 45%,#E3E9F1 65%);background-size:200% 100%;animation:shine 1.3s linear infinite}
 .sk i:nth-child(2){opacity:.75}.sk i:nth-child(3){opacity:.5}
@@ -332,25 +342,28 @@ def link_cards(items):
     return f'<div class="lks">{cells}</div>'
 
 
-def table_html(df, fmts=None, heat=None, scroll=False):
-    fmts, heat = fmts or {}, heat or {}
+def table_html(df, fmts=None, heat=None, scroll=False, rank=False, chips=None):
+    fmts, heat, chips = fmts or {}, heat or {}, chips or {}
     df = df.loc[:, ~df.columns.duplicated()]
     num = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
     mx = {c: (heat[c] or pd.to_numeric(df[c], errors="coerce").max() or 1) for c in heat}
-    head = "".join(f'<th class="{"num" if c in num else ""}">{esc(c)}</th>' for c in df.columns)
+    head = ('<th class="rk0">#</th>' if rank else "") + "".join(f'<th class="{"num" if c in num else ""}">{esc(c)}</th>' for c in df.columns)
     body = ""
-    for _, r in df.iterrows():
-        tds = ""
-        for c in df.columns:
+    for i, (_, r) in enumerate(df.iterrows()):
+        tds = f'<td class="rk0"><b>{i + 1}</b></td>' if rank else ""
+        for j, c in enumerate(df.columns):
             v = r[c]
             na = not isinstance(v, (list, tuple)) and pd.isna(v)
             s = "-" if na else fmts[c](v) if c in fmts else f"{v:,.0f}" if c in num else str(v)
-            style = ""
-            if c in heat and not na:
-                p = max(0, min(100, float(v) / mx[c] * 100))
-                style = f' style="background:linear-gradient(90deg,#D6E3F7 {p:.0f}%,transparent {p:.0f}%)"'
-            tds += f'<td class="{"num" if c in num else ""}"{style}>{esc(s)}</td>'
-        body += f"<tr>{tds}</tr>"
+            if c in chips and not na:
+                col = chips[c].get(v, "#8FA3BD")
+                cell = f'<span class="tc" style="background:{col}1F;color:{col}">{esc(s)}</span>'
+            elif c in heat and not na:
+                cell = f'<div class="db"><b>{esc(s)}</b><span><i style="width:{max(0, min(100, float(v) / mx[c] * 100)):.0f}%"></i></span></div>'
+            else:
+                cell = esc(s)
+            tds += f'<td class="{"num" if c in num else ""}{" nm" if j == 0 and c not in num else ""}">{cell}</td>'
+        body += f'<tr style="--i:{i}">{tds}</tr>'
     return f'<div class="tw{" sc" if scroll else ""}"><table class="tbl"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
