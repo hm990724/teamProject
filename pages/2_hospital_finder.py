@@ -1,8 +1,9 @@
-import html
 import json
 import math
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 import pandas as pd
@@ -15,30 +16,50 @@ try:
 except Exception:  # noqa: BLE001
     get_geolocation = None
 
-from common import bars, cnt, env, hero, hira_get, hira_get_any, kpis, link_cards, setup, skel, stack_bars, table_html, topbar
+from common import (bars, cnt, env, esc, hero, hira_get, kpis, link_cards, open_badge, setup, skel, stack_bars,
+                    table_html, topbar, week_hours)
 
 setup("병원 찾기", """
-.hc{background:#fff;border:1px solid var(--ln);border-radius:12px;padding:16px 18px;margin-bottom:10px;box-shadow:var(--sh);
- transition:transform .25s var(--ease),box-shadow .25s,border-color .25s;animation:rise .5s var(--ease) both;animation-delay:calc(var(--i,0)*50ms)}
-.hc:hover{transform:translateY(-3px);box-shadow:0 10px 26px rgba(11,37,69,.10);border-color:#B9C9DE}
-.hc-top{display:flex;gap:12px;align-items:flex-start}
-.badge{flex:0 0 32px;height:32px;border-radius:8px;background:#EEF2F7;color:var(--sb);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.9rem}
-.badge.top{background:var(--navy);color:#fff}
-.hc-name{font-weight:700;line-height:1.35}.hc-meta{font-size:.82rem;color:var(--sb);margin-top:4px;line-height:1.5}
-.tag{display:inline-block;font-size:.72rem;font-weight:700;padding:2px 9px;border-radius:5px;margin-right:6px;color:#fff}
-.hc-dist{margin-left:auto;text-align:right;font-weight:800;white-space:nowrap}.hc-dist small{display:block;font-weight:500;color:var(--sb);font-size:.72rem}
-.mini{display:flex;height:6px;border-radius:99px;overflow:hidden;margin-top:10px;background:#EDF2F8}.mini i{display:block;height:100%}
-.links{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
-.links a{font-size:.8rem;font-weight:600;color:var(--bl2);text-decoration:none;background:var(--soft);padding:6px 12px;border-radius:6px;transition:background .2s,transform .15s}
-.links a:hover{background:#D5E2F8}.links a:active{transform:scale(.96)}
-.empty{background:#fff;border:1px solid var(--ln);border-radius:12px;padding:28px;text-align:center;color:var(--sb);line-height:1.7}
+.hc{position:relative;overflow:hidden;background:#fff;border:1px solid #E3ECF6;border-radius:16px;padding:16px 18px 14px 22px;margin-bottom:12px;
+ box-shadow:0 1px 2px rgba(16,42,67,.04),0 8px 20px rgba(16,42,67,.05);
+ transition:transform .3s var(--ease),box-shadow .3s,border-color .3s;animation:rise .55s var(--ease) both;animation-delay:calc(var(--i,0)*60ms)}
+.hc::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--acc,#1E6FD9);transition:width .3s var(--ease)}
+.hc::after{content:"✚";position:absolute;right:-8px;top:-18px;font-size:72px;line-height:1;color:var(--acc,#1E6FD9);opacity:.05;transition:transform .5s var(--ease),opacity .3s}
+.hc:hover{transform:translateY(-4px);box-shadow:0 14px 32px rgba(30,111,217,.14);border-color:#BFD4EE}
+.hc:hover::before{width:8px}.hc:hover::after{transform:rotate(90deg) scale(1.15);opacity:.09}
+.hc-top{display:flex;gap:12px;align-items:flex-start;position:relative;z-index:1}
+.badge{flex:0 0 34px;height:34px;border-radius:50%;background:#EEF4FB;color:var(--sb);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.9rem}
+.badge.top{background:linear-gradient(135deg,#1E6FD9,#17A2A8);color:#fff;box-shadow:0 4px 10px rgba(30,111,217,.35)}
+.hc-name{font-weight:700;line-height:1.35;font-size:1.02rem}
+.hc-meta{font-size:.82rem;color:var(--sb);margin-top:4px;line-height:1.5}
+.tag{display:inline-block;font-size:.72rem;font-weight:700;padding:2px 9px;border-radius:99px;margin-right:6px;color:#fff}
+.hc-dist{margin-left:auto;text-align:right;font-weight:800;white-space:nowrap;background:#F1F7FE;color:#1B5FC1;border-radius:10px;padding:6px 10px}
+.hc-dist small{display:block;font-weight:500;color:var(--sb);font-size:.7rem}
+.mini{display:flex;height:6px;border-radius:99px;overflow:hidden;margin-top:10px;background:#EDF2F8;position:relative;z-index:1}
+.mini i{display:block;height:100%;transform-origin:left;animation:grow .8s var(--ease) both}
+.links{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;position:relative;z-index:1}
+.links a{font-size:.8rem;font-weight:600;color:#1B5FC1;text-decoration:none;background:#fff;border:1px solid #DCE8F7;padding:6px 13px;border-radius:99px;
+ transition:background .2s,color .2s,border-color .2s,transform .15s}
+.links a:hover{background:#1E6FD9;color:#fff;border-color:#1E6FD9}.links a:active{transform:scale(.95)}
+.empty{background:#fff;border:1px dashed #C9D8EA;border-radius:16px;padding:28px;text-align:center;color:var(--sb);line-height:1.7}
+button[data-testid="stBaseButton-primary"]{background:linear-gradient(135deg,#1E6FD9,#17A2A8)!important;border:0!important;transition:transform .15s,box-shadow .25s!important}
+button[data-testid="stBaseButton-primary"]:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(30,111,217,.28)}
+iframe{border-radius:16px}
 """)
-
 
 KAKAO, HIRA = env("KAKAO_REST_API_KEY"), env("HIRA_SERVICE_KEY")
 HIRA_DETAIL = env("HIRA_DETAIL_SERVICE_KEY") or HIRA
-DEFAULT_LOC = {"lat": 37.5665, "lng": 126.9780, "label": "서울시청 (기본 위치)"}
 
+
+def detail_off(e=None):
+    if e is not None and "NOT_REGISTERED" in str(e):
+        st.session_state["detail_off"] = True
+    return st.session_state.get("detail_off", False)
+
+
+DETAIL_ON = bool(HIRA_DETAIL) and not detail_off()
+UNREG = "진료시간·전문의 상세는 공공데이터포털에서 '의료기관별상세정보서비스' 활용신청을 하면 쓸 수 있어요. 신청 전에는 이 항목이 숨겨져요."
+DEFAULT_LOC = {"lat": 37.5665, "lng": 126.9780, "label": "서울시청 (기본 위치)"}
 DEPT = {"내과": "01", "신경과": "02", "정신건강의학과": "03", "외과": "04", "정형외과": "05", "신경외과": "06", "흉부외과": "07",
         "성형외과": "08", "마취통증의학과": "09", "산부인과": "10", "소아청소년과": "11", "안과": "12", "이비인후과": "13",
         "피부과": "14", "비뇨의학과": "15", "영상의학과": "16", "재활의학과": "21", "가정의학과": "23", "응급의학과": "24"}
@@ -47,12 +68,20 @@ PHARM = ("약국", "#F76B9C")
 UNKNOWN = ("종별 미상", "#B0B8C1")
 COLS = ["name", "cl", "addr", "tel", "url", "lat", "lng", "ykiho", "dr", "sp", "gp", "tr"]
 MAX_PAGES = 5
+HOSP_CL = ("01", "11", "21")
+DETAIL_VERSIONS = ("2.8", "2.7")
+DD_OPS = [("getSpcSbjtSdrInfo", ("dtlSdrCnt", "sdrCnt", "dgsbjtPrSdrCnt")), ("getDgsbjtInfo", ("dgsbjtPrSdrCnt", "dtlSdrCnt", "sdrCnt"))]
+DAYS = [("월", "Mon"), ("화", "Tue"), ("수", "Wed"), ("목", "Thu"), ("금", "Fri"), ("토", "Sat"), ("일", "Sun")]
+KST = timezone(timedelta(hours=9))
+_DD, _DD_BEST = {}, []
+
+
+def base_dept(name):
+    return name if name in DEPT else "내과" if name.endswith("내과") else "외과" if name.endswith("외과") else None
 
 
 def dept_code(name):
-    if name in DEPT:
-        return DEPT[name]
-    return "01" if name.endswith("내과") else "04" if name.endswith("외과") else None
+    return DEPT.get(base_dept(name))
 
 
 def haversine(lat1, lng1, lat2, lng2):
@@ -62,18 +91,21 @@ def haversine(lat1, lng1, lat2, lng2):
 
 
 def dept_ok(name, depts):
-    allowed = set(depts)
-    for suffix in ("내과", "외과"):
-        if any(x.endswith(suffix) for x in depts):
-            allowed.add(suffix)
+    allowed = set(depts) | {s for s in ("내과", "외과") if any(x.endswith(s) for x in depts)}
     found = [s for s in DEPT if s in name]
     found = [s for s in found if not any(s != o and s in o for o in found)]
     return not found or any(s in allowed for s in found)
 
 
+def num(it, k):
+    try:
+        return float(it.get(k) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def kakao(path, **params):
-    r = requests.get(f"https://dapi.kakao.com/v2/local/search/{path}.json", timeout=10,
-                     headers={"Authorization": f"KakaoAK {KAKAO}"}, params=params)
+    r = requests.get(f"https://dapi.kakao.com/v2/local/search/{path}.json", timeout=10, headers={"Authorization": f"KakaoAK {KAKAO}"}, params=params)
     return r.json().get("documents", [])
 
 
@@ -99,19 +131,16 @@ def place_search(q):
 
 
 def hira_one(lat, lng, radius_km, cl, dept):
-    """한 종별·진료과 조합을 페이지 끝까지(최대 MAX_PAGES) 가져온다. (items, totalCount) 반환"""
-    base = {"xPos": lng, "yPos": lat, "radius": int(radius_km * 1000), "clCd": cl, "numOfRows": 100}
-    if dept:
-        base["dgsbjtCd"] = dept
+    base = {"xPos": lng, "yPos": lat, "radius": int(radius_km * 1000), "clCd": cl, "numOfRows": 100, **({"dgsbjtCd": dept} if dept else {})}
     out, total, page = [], 0, 1
     while page <= MAX_PAGES:
-        last = "알 수 없음"
+        items, last = None, ""
         for _ in range(2):
             try:
                 items, total, _raw = hira_get("hospInfoServicev2/getHospBasisList", {**base, "pageNo": page}, HIRA, (8, 30))
                 break
             except requests.exceptions.RequestException as e:
-                last, items = f"서버 응답 지연/실패({type(e).__name__})", None
+                last = f"서버 응답 지연/실패({type(e).__name__})"
         if items is None:
             raise RuntimeError("심평원 " + last)
         out += items
@@ -121,28 +150,21 @@ def hira_one(lat, lng, radius_km, cl, dept):
     return out, total
 
 
-def num(it, k):
-    try:
-        return float(it.get(k) or 0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
 def fetch_hira(lat, lng, radius_km, dept_codes):
-    cache = st.session_state.setdefault("hira_cache2", {})
-    now = time.time()
+    cache, now = st.session_state.setdefault("hira_cache2", {}), time.time()
     jobs = [(c, d) for c in CL for d in (dept_codes or (None,))]
-    key = lambda j: (lat, lng, radius_km) + j  # noqa: E731
-    todo = [j for j in jobs if key(j) not in cache or now - cache[key(j)][0] > 1800]
-    errs = []
+
+    def key(j):
+        return (lat, lng, radius_km) + j
 
     def run(job):
         try:
-            items, total = hira_one(lat, lng, radius_km, *job)
-            return job, items, total, None
+            return job, *hira_one(lat, lng, radius_km, *job), None
         except Exception as e:  # noqa: BLE001
             return job, [], 0, str(e)[:140]
 
+    errs = []
+    todo = [j for j in jobs if key(j) not in cache or now - cache[key(j)][0] > 1800]
     if todo:
         with ThreadPoolExecutor(4) as ex:
             for job, items, total, err in ex.map(run, todo):
@@ -157,9 +179,9 @@ def fetch_hira(lat, lng, radius_km, dept_codes):
         for it in items:
             try:
                 rows[it["ykiho"]] = {"name": it.get("yadmNm", ""), "cl": job[0], "addr": it.get("addr", ""), "tel": it.get("telno", ""),
-                                     "url": it.get("hospUrl", ""), "lat": float(it["YPos"]), "lng": float(it["XPos"]),
-                                     "ykiho": it["ykiho"], "dr": num(it, "drTotCnt"), "sp": num(it, "mdeptSdrCnt"),
-                                     "gp": num(it, "mdeptGdrCnt"), "tr": num(it, "mdeptIntnCnt") + num(it, "mdeptResdntCnt")}
+                                     "url": it.get("hospUrl", ""), "lat": float(it["YPos"]), "lng": float(it["XPos"]), "ykiho": it["ykiho"],
+                                     "dr": num(it, "drTotCnt"), "sp": num(it, "mdeptSdrCnt"), "gp": num(it, "mdeptGdrCnt"),
+                                     "tr": num(it, "mdeptIntnCnt") + num(it, "mdeptResdntCnt")}
             except (KeyError, ValueError):
                 continue
     return list(rows.values()), errs, len(jobs), trunc
@@ -167,32 +189,28 @@ def fetch_hira(lat, lng, radius_km, dept_codes):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_kakao(lat, lng, radius_km, code, query):
-    docs = kakao("keyword", query=query, x=lng, y=lat, radius=min(int(radius_km * 1000), 20000), sort="distance", size=15,
-                 category_group_code=code)
+    docs = kakao("keyword", query=query, x=lng, y=lat, radius=min(int(radius_km * 1000), 20000), sort="distance", size=15, category_group_code=code)
     return [{"name": d["place_name"], "cl": "PH" if code == "PM9" else "?", "addr": d.get("road_address_name") or d.get("address_name", ""),
              "tel": d.get("phone", ""), "url": d.get("place_url", ""), "lat": float(d["y"]), "lng": float(d["x"]),
              "ykiho": "", "dr": 0.0, "sp": 0.0, "gp": 0.0, "tr": 0.0} for d in docs]
 
 
-_DD, _DD_BEST = {}, []
-DD_OPS = [("getSpcSbjtSdrInfo2.7", ("dtlSdrCnt", "sdrCnt", "dgsbjtPrSdrCnt")), ("getDgsbjtInfo2.7", ("dgsbjtPrSdrCnt", "dtlSdrCnt", "sdrCnt"))]
-
-
 def dept_doctors(ykiho):
-    """진료과목별 전문의 수. 상세정보서비스의 '전문과목별전문의수'·'진료과목정보'를 차례로 시도한다. 성공 24시간, 실패 10분 캐시."""
     now, hit = time.time(), _DD.get(ykiho)
     if hit and now - hit[0] < (86400 if hit[1] is not None else 600):
         if hit[1] is None:
             raise RuntimeError(hit[2])
         return hit[1]
-    ops = sorted(DD_OPS, key=lambda o: o[0] not in _DD_BEST)
+    combos = sorted(((v, op, f) for v in DETAIL_VERSIONS for op, f in DD_OPS), key=lambda c: (c[0], c[1]) not in _DD_BEST)
     errs, empty_ok = [], False
-    for op, fields in ops:
+    for ver, op, fields in combos:
         for extra in ({}, {"numOfRows": 100, "pageNo": 1}):
             try:
-                items, _ = hira_get_any(f"MadmDtlInfoService2.7/{op}", {"ykiho": ykiho, **extra}, HIRA_DETAIL, 15)
+                items = hira_get(f"MadmDtlInfoService{ver}/{op}{ver}", {"ykiho": ykiho, **extra}, HIRA_DETAIL, 15)[0]
             except Exception as e:  # noqa: BLE001
-                errs.append(f"{op}: {e}")
+                errs.append(f"{op}{ver}: {e}")
+                if "NO_OPENAPI_SERVICE_ERROR" in str(e):
+                    break
                 continue
             out = []
             for it in items:
@@ -201,16 +219,56 @@ def dept_doctors(ykiho):
                 if name and n > 0:
                     out.append((name, n))
             if out:
-                _DD_BEST[:] = [op]
+                _DD_BEST[:] = [(ver, op)]
                 _DD[ykiho] = (now, sorted(out, key=lambda x: -x[1]), "")
                 return _DD[ykiho][1]
             empty_ok = True
     if empty_ok:
         _DD[ykiho] = (now, [], "")
         return []
-    msg = errs[0] if errs else "응답이 비어 있어요"
+    msg = " | ".join(errs[:4]) if errs else "응답이 비어 있어요"
     _DD[ykiho] = (now, None, msg)
     raise RuntimeError(msg)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def hospital_detail(ykiho):
+    last = None
+    for extra in ({}, {"numOfRows": 10, "pageNo": 1}):
+        try:
+            items = hira_get("MadmDtlInfoService2.8/getDtlInfo2.8", {"ykiho": ykiho, **extra}, HIRA_DETAIL, 15)[0]
+            return items[0] if items else {}
+        except Exception as e:  # noqa: BLE001
+            last = e
+    raise RuntimeError(str(last))
+
+
+def hhmm(v):
+    s = str(v if v is not None else "").strip().split(".")[0]
+    if not s.isdigit() or len(s) > 4:
+        return None
+    h, m = int(s.zfill(4)[:2]), int(s.zfill(4)[2:])
+    return h * 60 + m if (h < 24 and m < 60) or (h == 24 and m == 0) else None
+
+
+def parse_hours(d):
+    rows = []
+    for ko, en in DAYS:
+        s, e = hhmm(d.get(f"trmt{en}Start")), hhmm(d.get(f"trmt{en}End"))
+        rows.append((ko, s, e) if s is not None and e is not None and e > s else (ko, None, None))
+    return rows
+
+
+def open_state(rows, now):
+    if not any(r[1] is not None for r in rows):
+        return None
+    _, s, e = rows[now.weekday()]
+    m = now.hour * 60 + now.minute
+    if s is None:
+        return "closed", "오늘은 휴진이거나 미신고예요"
+    if s <= m < e:
+        return "open", f"지금 진료 중 · {e // 60:02d}:{e % 60:02d}까지"
+    return ("closed", f"진료 전 · {s // 60:02d}:{s % 60:02d} 시작") if m < s else ("closed", "오늘 진료가 끝났어요")
 
 
 def build(rows, lat, lng, radius, depts=()):
@@ -220,17 +278,14 @@ def build(rows, lat, lng, radius, depts=()):
     df = df.drop_duplicates(["name", "lat", "lng"])
     df["dist"] = [haversine(lat, lng, a, b) for a, b in zip(df["lat"], df["lng"])]
     df = df[df["dist"] <= radius]
-    df = df[[(c == "PH") or dept_ok(n, depts) for c, n in zip(df["cl"], df["name"])]].copy()
+    df = df[[c == "PH" or dept_ok(n, depts) for c, n in zip(df["cl"], df["name"])]].copy()
     info = [PHARM if c == "PH" else CL.get(c, UNKNOWN) for c in df["cl"]]
-    df["type"] = [i[0] for i in info]
-    df["color"] = [i[1] for i in info]
+    df["type"], df["color"] = [i[0] for i in info], [i[1] for i in info]
     return df.sort_values("dist").reset_index(drop=True)
 
 
 def web_links(name, url=""):
-    items = []
-    if url:
-        items.append(("병원 공식 홈페이지", "의료진 소개 · 진료시간 · 예약", url))
+    items = [("병원 공식 홈페이지", "의료진 소개 · 진료시간 · 예약", url)] if url else []
     items += [("의료진 검색", "네이버에서 소속 의료진 찾기", f"https://search.naver.com/search.naver?query={quote(name + ' 의료진')}"),
               ("위치 · 방문자 후기", "카카오맵에서 보기", f"https://map.kakao.com/?q={quote(name)}"),
               ("진료시간 · 전문의 검색", "구글에서 보기", f"https://www.google.com/search?q={quote(name + ' 전문의 진료시간')}")]
@@ -238,22 +293,21 @@ def web_links(name, url=""):
 
 
 def card(r, rank=None, i=0):
-    top = " top" if rank and rank <= 3 else ""
-    badge = f'<div class="badge{top}">{rank}</div>' if rank else f'<div class="badge" style="background:{r["color"]};color:#fff">약</div>'
+    badge = f'<div class="badge{" top" if rank and rank <= 3 else ""}">{rank}</div>' if rank else f'<div class="badge" style="background:{r["color"]};color:#fff">약</div>'
     doc = ""
     if rank and r["dr"]:
         tot = r["dr"]
         segs = [(r["sp"], "#1D5FD1"), (r["gp"], "#6FA0EA"), (r["tr"], "#A9C6F2"), (max(tot - r["sp"] - r["gp"] - r["tr"], 0), "#D9E2EE")]
         doc = (f'<div class="hc-meta">의사 {int(tot)}명' + (f' · 전문의 {int(r["sp"])}명' if r["sp"] else "") + "</div>"
                '<div class="mini">' + "".join(f'<i style="width:{v / tot * 100:.1f}%;background:{c}"></i>' for v, c in segs if v > 0) + "</div>")
-    links = f'<a href="tel:{html.escape(r["tel"])}">전화</a>' if r["tel"] else ""
+    links = f'<a href="tel:{esc(r["tel"])}">전화</a>' if r["tel"] else ""
     links += f'<a target="_blank" href="https://map.kakao.com/link/to/{quote(r["name"])},{r["lat"]},{r["lng"]}">길찾기</a>'
     if r["url"]:
-        links += f'<a target="_blank" href="{html.escape(r["url"])}">홈페이지</a>'
+        links += f'<a target="_blank" href="{esc(r["url"])}">홈페이지</a>'
     if rank:
         links += f'<a target="_blank" href="https://search.naver.com/search.naver?query={quote(r["name"] + " 의료진")}">의료진</a>'
-    return (f'<div class="hc" style="--i:{i}"><div class="hc-top">{badge}<div style="min-width:0"><div class="hc-name">{html.escape(r["name"])}</div>'
-            f'<div class="hc-meta"><span class="tag" style="background:{r["color"]}">{r["type"]}</span>{html.escape(r["addr"])}</div></div>'
+    return (f'<div class="hc" style="--i:{i};--acc:{r["color"]}"><div class="hc-top">{badge}<div style="min-width:0"><div class="hc-name">{esc(r["name"])}</div>'
+            f'<div class="hc-meta"><span class="tag" style="background:{r["color"]}">{r["type"]}</span>{esc(r["addr"])}</div></div>'
             f'<div class="hc-dist">{r["dist"]:.1f} km<small>직선거리</small></div></div>{doc}<div class="links">{links}</div></div>')
 
 
@@ -265,26 +319,27 @@ const s=document.createElement('script');s.src=urls[i];s.onload=cb;s.onerror=()=
 const css=document.createElement('link');css.rel='stylesheet';css.href='https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css';document.head.appendChild(css);
 loadJs(['https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js','https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js','https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'],()=>{try{start();}catch(e){msg('지도 오류: '+e.message);}});
 function start(){
- const map=L.map('m');map.fitBounds(L.latLng(D.c[0],D.c[1]).toBounds(D.r*2000));
+ const map=L.map('m');const near=D.p.filter(p=>p.rank&&p.rank<=5).map(p=>[p.lat,p.lng]).concat([D.c]);
+ map.fitBounds(near.length>1?near:L.latLng(D.c[0],D.c[1]).toBounds(D.r*2000),{padding:[40,40],maxZoom:16});
  const tiles=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(map);
  let errors=0;tiles.on('tileerror',()=>{if(++errors===3)msg('지도 타일 서버에 접속하지 못했어요.');});
  L.circle(D.c,{radius:D.r*1000,color:'#3182F6',weight:1,fillOpacity:.04}).addTo(map);
  L.circleMarker(D.c,{radius:8,color:'#fff',weight:3,fillColor:'#191F28',fillOpacity:1}).addTo(map).bindTooltip('내 위치');
  D.p.forEach(p=>{const top=p.rank&&p.rank<=5,s=top?26:14;
-  const icon=L.divIcon({className:'',iconSize:[s,s],iconAnchor:[s/2,s/2],html:'<div style="width:'+s+'px;height:'+s+'px;border-radius:50%;background:'+p.color+';border:2px solid #fff;color:#fff;font:700 13px/'+(s-4)+'px sans-serif;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.35)">'+(top?p.rank:'')+'</div>'});
+  const icon=L.divIcon({className:'',iconSize:[s,s],iconAnchor:[s/2,s/2],html:'<div class="pin'+(top?' top':'')+'" style="width:'+s+'px;height:'+s+'px;border-radius:50%;background:'+p.color+';border:2px solid #fff;color:#fff;font:700 13px/'+(s-4)+'px sans-serif;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.35)">'+(top?p.rank:'')+'</div>'});
   L.marker([p.lat,p.lng],{icon}).addTo(map).bindPopup(p.html);});
  setTimeout(()=>map.invalidateSize(),300);}
 """
+MAP_CSS = ("html,body,#m{height:100%;margin:0;border-radius:20px}#msg{position:absolute;left:10px;bottom:10px;z-index:9999;background:#fff;color:#b42318;"
+           "padding:8px 12px;border-radius:8px;font:13px sans-serif;box-shadow:0 1px 6px rgba(0,0,0,.25);display:none;max-width:80%}"
+           ".pin.top{animation:pl 2s infinite}@keyframes pl{0%{box-shadow:0 0 0 0 rgba(30,111,217,.5)}100%{box-shadow:0 0 0 14px rgba(30,111,217,0)}}")
 
 
 def map_html(center, radius, df):
     pts = [{"lat": r["lat"], "lng": r["lng"], "color": r["color"], "rank": None if r["type"] == "약국" else i + 1,
-            "html": f'<b>{html.escape(r["name"])}</b><br>{r["type"]} · {r["dist"]:.1f}km<br>{html.escape(r["addr"])}'}
-           for i, r in df.iterrows()]
+            "html": f'<b>{esc(r["name"])}</b><br>{r["type"]} · {r["dist"]:.1f}km<br>{esc(r["addr"])}'} for i, r in df.iterrows()]
     data = json.dumps({"c": center, "r": radius, "p": pts[:120]}, ensure_ascii=False).replace("</", "<\\/")
-    css = ("html,body,#m{height:100%;margin:0;border-radius:20px}#msg{position:absolute;left:10px;bottom:10px;z-index:9999;background:#fff;color:#b42318;"
-           "padding:8px 12px;border-radius:8px;font:13px sans-serif;box-shadow:0 1px 6px rgba(0,0,0,.25);display:none;max-width:80%}")
-    return (f'<html><head><meta charset="utf-8"><style>{css}</style></head><body><div id="m"></div><div id="msg"></div>'
+    return (f'<html><head><meta charset="utf-8"><style>{MAP_CSS}</style></head><body><div id="m"></div><div id="msg"></div>'
             f'<script>{MAP_JS.replace("__DATA__", data)}</script></body></html>')
 
 
@@ -325,42 +380,71 @@ def load_hospitals(lat, lng, radius, depts):
             err = (err + " / " if err else "") + f"카카오 조회 실패: {str(e)[:100]}"
     if KAKAO:
         try:
-            rows = rows + fetch_kakao(la, ln, radius, "PM9", "약국")
+            rows += fetch_kakao(la, ln, radius, "PM9", "약국")
         except Exception:  # noqa: BLE001
             warn = (warn + " " if warn else "") + "약국 정보를 불러오지 못했어요."
     return rows, err, warn
 
 
+def tidy_time(v):
+    return re.sub(r"(?<!\d)(\d{2})(\d{2})(?!\d)", r"\1:\2", v)
+
+
+def show_hospital_info(r):
+    st.markdown('<div class="sec" style="margin-top:22px">진료시간 · 운영 정보</div><div class="sub" style="margin:-8px 0 10px">'
+                f'{esc(r["name"])}이(가) 심평원에 신고한 정보예요. 신고하지 않은 병원은 비어 있어요.</div>', unsafe_allow_html=True)
+    if not (r["ykiho"] and DETAIL_ON):
+        return
+    ph = st.empty()
+    ph.markdown(skel(2), unsafe_allow_html=True)
+    try:
+        d = hospital_detail(r["ykiho"])
+    except Exception as e:  # noqa: BLE001
+        ph.empty()
+        st.caption(UNREG if detail_off(e) else f"진료시간을 불러오지 못했어요: {str(e)[:300]}")
+        return
+    ph.empty()
+    rows, now = parse_hours(d), datetime.now(KST)
+    state = open_state(rows, now)
+    if state is None:
+        st.info("이 병원은 요일별 진료시간을 신고하지 않았어요. 공식 홈페이지나 전화로 확인해 주세요.")
+    else:
+        st.markdown('<div class="chart"><div class="hh"><div><div class="ct">요일별 진료시간</div><div class="cs" style="margin:0">주황 선은 지금 시각이에요</div></div>'
+                    + open_badge(*state) + "</div>" + week_hours(rows, now.weekday(), now.hour * 60 + now.minute) + "</div>", unsafe_allow_html=True)
+    notes = [f"{lab} {tidy_time(v)}" for lab, key in (("점심시간", "lunchWeek"), ("접수 마감", "rcvWeek"), ("토요일 점심", "lunchSat"),
+                                                     ("토요일 접수 마감", "rcvSat"), ("일요일", "noTrmtSun"), ("공휴일", "noTrmtHoli"))
+             if (v := str(d.get(key) or "").strip())]
+    notes += [n for n, key in (("응급실 주간 운영", "emyDayYn"), ("응급실 야간 운영", "emyNgtYn")) if str(d.get(key) or "").upper() == "Y"]
+    if notes:
+        st.markdown('<div style="margin-top:10px">' + "".join(f'<span class="chip">{esc(n)}</span>' for n in notes) + "</div>", unsafe_allow_html=True)
+    st.caption("공휴일·임시 휴진은 반영되지 않아요. 방문 전에 전화로 확인해 주세요. 출처: 건강보험심사평가원 의료기관별상세정보서비스")
+
+
 def show_doctors(hosp):
-    st.markdown('<div class="sec">의료진 정보</div><div class="sub" style="margin:-8px 0 12px">가까운 병원 10곳의 의사 구성을 한 그래프로 비교해요. 막대 길이는 의사 수라서 병원 규모 차이가 그대로 보여요. '
-                '의사 개인의 이름·경력은 심평원 공개 데이터에 없어서, 병원별 의료진 링크로 연결해요.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec">의료진 정보</div><div class="sub" style="margin:-8px 0 12px">가까운 병원 10곳의 의사 구성을 한 그래프로 비교해요. 막대 길이는 의사 수라서 병원 규모 차이가 그대로 보여요.</div>',
+                unsafe_allow_html=True)
     h = hosp[hosp["dr"] > 0].head(10).reset_index(drop=True)
     if h.empty:
         st.info("의사 수는 심평원 데이터에서만 제공돼요. 지금은 카카오 데이터로 보고 있어서 표시할 수 없어요.")
         return
     names = [f"{r['name']} · {r['type']} · {r['dist']:.1f}km" for _, r in h.iterrows()]
-    sel = st.selectbox("병원 선택", names, key="doc_pick")
-    r = h.iloc[names.index(sel)]
-
-    rows = [(f"{x['name']} · {x['dist']:.1f}km",
-             {"전문의": x["sp"], "일반의": x["gp"], "수련의": x["tr"], "기타": max(x["dr"] - x["sp"] - x["gp"] - x["tr"], 0)}) for _, x in h.iterrows()]
-    parts = [("전문의", "#1D5FD1"), ("일반의", "#6FA0EA"), ("수련의", "#A9C6F2"), ("기타", "#D9E2EE")]
+    r = h.iloc[names.index(st.selectbox("병원 선택", names, key="doc_pick"))]
+    keys = ["전문의", "일반의", "수련의", "기타(치과·한방 등)"]
+    rows = [(f"{x['name']} · {x['dist']:.1f}km", dict(zip(keys, [x["sp"], x["gp"], x["tr"], max(x["dr"] - x["sp"] - x["gp"] - x["tr"], 0)]))) for _, x in h.iterrows()]
     ratio = (h["sp"] / h["dr"]).clip(upper=1) * 100
-    med_dr, med_ratio = h["dr"].median(), ratio.median()
     my_ratio = min(r["sp"] / r["dr"], 1) * 100 if r["dr"] else 0
-    st.markdown(kpis([("의사 총수", f"{r['dr']:,.0f}명", f"가까운 {len(h)}곳 중앙값 {med_dr:,.0f}명"),
-                      ("전문의", f"{r['sp']:,.0f}명", f"비율 {my_ratio:.0f}% · 중앙값 {med_ratio:.0f}%"),
-                      ("일반의", f"{r['gp']:,.0f}명"), ("수련의(인턴·레지던트)", f"{r['tr']:,.0f}명")]), unsafe_allow_html=True)
+    st.markdown(kpis([("의사 총수", f"{cnt(r['dr'])}명", f"가까운 {len(h)}곳 중앙값 {h['dr'].median():,.0f}명"),
+                      ("전문의", f"{cnt(r['sp'])}명", f"비율 {my_ratio:.0f}% · 중앙값 {ratio.median():.0f}%"),
+                      ("일반의", f"{cnt(r['gp'])}명"), ("수련의(인턴·레지던트)", f"{cnt(r['tr'])}명")]), unsafe_allow_html=True)
     st.markdown('<div class="chart"><div class="ct">의사 구성 비교</div><div class="cs">선택한 병원이 굵게 표시돼요 · 막대에 마우스를 올리면 인원이 보여요</div>'
-                + stack_bars(rows, parts, on=f"{r['name']} · {r['dist']:.1f}km") + "</div>", unsafe_allow_html=True)
-
+                + stack_bars(rows, list(zip(keys, ["#1D5FD1", "#6FA0EA", "#A9C6F2", "#D9E2EE"])), on=f"{r['name']} · {r['dist']:.1f}km") + "</div>",
+                unsafe_allow_html=True)
     t = pd.DataFrame({"병원": h["name"], "종별": h["type"], "거리": h["dist"], "의사": h["dr"], "전문의": h["sp"], "전문의 비율": ratio})
     with st.expander("표로 보기"):
         st.markdown(table_html(t, fmts={"거리": lambda v: f"{v:.1f}km", "의사": lambda v: f"{v:,.0f}명", "전문의": lambda v: f"{v:,.0f}명",
                                         "전문의 비율": lambda v: f"{v:.0f}%"}, heat={"전문의 비율": 100}), unsafe_allow_html=True)
         st.caption("전문의 비율 = 의과 전문의 ÷ 의사 총수 (건강보험심사평가원 병원정보서비스 기준)")
-
-    if r["ykiho"] and HIRA_DETAIL:
+    if r["ykiho"] and DETAIL_ON:
         ph = st.empty()
         ph.markdown(skel(2), unsafe_allow_html=True)
         try:
@@ -373,29 +457,18 @@ def show_doctors(hosp):
                 st.caption("이 병원은 진료과목별 전문의 정보가 없어요.")
         except Exception as e:  # noqa: BLE001
             ph.empty()
-            st.caption(f"진료과목별 정보를 불러오지 못했어요: {str(e)[:260]}")
-    st.markdown('<div class="sec" style="margin-top:22px">의료진 찾아보기</div><div class="sub" style="margin:-8px 0 4px">'
-                f'{html.escape(r["name"])}의 의료진·진료시간을 확인할 수 있는 곳이에요.</div>' + web_links(r["name"], r["url"]), unsafe_allow_html=True)
-
-
-# ───────────────────────── 진료과별 전문의 비교 ─────────────────────────
-HOSP_CL = ("01", "11", "21")  # 상세정보(전문의 수) 조회는 병원급 이상 위주
-
-
-def base_dept(name):
-    if name in DEPT:
-        return name
-    return "내과" if name.endswith("내과") else "외과" if name.endswith("외과") else None
+            st.caption(UNREG if detail_off(e) else f"진료과목별 정보를 불러오지 못했어요: {str(e)[:400]}")
+    show_hospital_info(r)
+    st.markdown('<div class="sec" style="margin-top:22px">더 알아보기</div><div class="sub" style="margin:-8px 0 4px">'
+                '의사 개인의 이름·경력은 심평원 공개 API에 없어서, 아래 외부 링크에서 확인할 수 있어요.</div>' + web_links(r["name"], r["url"]),
+                unsafe_allow_html=True)
 
 
 def show_compare(hosp, depts):
     st.markdown('<div class="sec" style="margin-top:6px">진료과별 전문의 비교</div><div class="sub" style="margin:-8px 0 12px">'
                 '가까운 병원급 이상 의료기관(최대 8곳)에서 선택한 진료과 전문의가 몇 명인지 비교해요. 전문의가 많을수록 해당 과 진료 규모가 크다는 뜻이에요.</div>',
                 unsafe_allow_html=True)
-    bases = list(dict.fromkeys(b for b in (base_dept(d) for d in depts) if b))
-    if not HIRA_DETAIL:
-        st.info(".env에 HIRA_DETAIL_SERVICE_KEY(또는 HIRA_SERVICE_KEY)가 있어야 비교할 수 있어요.")
-        return
+    bases = list(dict.fromkeys(b for b in map(base_dept, depts) if b))
     elig = hosp[hosp["cl"].isin(HOSP_CL) & (hosp["ykiho"] != "")].head(8)
     if elig.empty or not bases:
         st.info("비교할 병원급 이상 의료기관이나 진료과가 없어요. 반경을 넓히거나 진료과를 골라 주세요.")
@@ -421,12 +494,11 @@ def show_compare(hosp, depts):
         rows, errs = [], []
         try:
             with ThreadPoolExecutor(4) as ex:
-                for (yk, name, typ, dist), by, err in ex.map(run, job_t):
+                for (_, name, typ, dist), by, err in ex.map(run, job_t):
                     if err:
                         errs.append(err)
-                        continue
-                    rows.append({"hosp": name, "type": typ, "dist": dist, "sel": sum(by.get(b, 0) for b in job_b),
-                                 "all": sum(by.values()), "by": by})
+                    else:
+                        rows.append({"hosp": name, "type": typ, "dist": dist, "sel": sum(by.get(b, 0) for b in job_b), "all": sum(by.values())})
             st.session_state["dc_res"] = {"sig": (tuple(t[0] for t in job_t), job_b), "rows": rows, "errs": errs, "n": len(job_t)}
         finally:
             st.session_state["dc_job"] = None
@@ -437,8 +509,7 @@ def show_compare(hosp, depts):
             st.caption("위치·반경·진료과가 바뀌어서 이전 결과를 숨겼어요. 다시 비교해 주세요.")
         return
     if len(res["errs"]) == res["n"]:
-        st.warning("전문의 정보를 불러오지 못했어요. 공공데이터포털에서 '의료기관별상세정보서비스' 활용 신청이 됐는지, "
-                   "키가 다르면 .env에 HIRA_DETAIL_SERVICE_KEY를 넣었는지 확인해 주세요. (" + res["errs"][0] + ")")
+        st.warning(UNREG if detail_off(res["errs"][0]) else "전문의 정보를 불러오지 못했어요. (" + res["errs"][0] + ")")
         return
     if res["errs"]:
         st.caption(f"{len(res['errs'])}곳은 정보를 불러오지 못해서 빠졌어요.")
@@ -447,15 +518,14 @@ def show_compare(hosp, depts):
         st.info("선택한 진료과 전문의 정보가 있는 병원이 없어요. 진료과를 바꿔 보세요.")
         return
     top, near = d.iloc[0], d.sort_values("dist").iloc[0]
-    st.markdown(kpis([("비교한 병원", f"{len(d)}곳"), ("전문의 최다", f"{top['sel']:,.0f}명", html.escape(top["hosp"])),
-                      ("가장 가까운 병원", f"{near['sel']:,.0f}명", html.escape(near["hosp"]) + f" · {near['dist']:.1f}km")]), unsafe_allow_html=True)
+    st.markdown(kpis([("비교한 병원", f"{len(d)}곳"), ("전문의 최다", f"{top['sel']:,.0f}명", esc(top["hosp"])),
+                      ("가장 가까운 병원", f"{near['sel']:,.0f}명", esc(near["hosp"]) + f" · {near['dist']:.1f}km")]), unsafe_allow_html=True)
     msg = (f"{'·'.join(bases)} 전문의가 가장 많은 곳은 {top['hosp']}({top['sel']:,.0f}명, {top['dist']:.1f}km)예요. "
            f"가장 가까운 {near['hosp']}에는 {near['sel']:,.0f}명이 있어요.")
-    st.markdown(f'<div class="insight">{html.escape(msg)}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="insight">{esc(msg)}</div>', unsafe_allow_html=True)
     c1, c2 = st.columns([1.7, 1], gap="medium")
     c1.markdown('<div class="chart"><div class="ct">병원별 전문의 수</div><div class="cs">선택 진료과 합계 · 가장 많은 곳이 진하게 표시돼요</div>'
-                + bars([(f"{r['hosp']} · {r['dist']:.1f}km", r["sel"]) for _, r in d.iterrows()], share=False, top=True) + "</div>",
-                unsafe_allow_html=True)
+                + bars([(f"{r['hosp']} · {r['dist']:.1f}km", r["sel"]) for _, r in d.iterrows()], share=False, top=True) + "</div>", unsafe_allow_html=True)
     by_type = d.groupby("type")["sel"].mean().sort_values(ascending=False)
     if len(by_type) >= 2:
         c2.markdown('<div class="chart"><div class="ct">종별 평균 전문의</div><div class="cs">같은 진료과, 병원 종별 평균</div>'
@@ -470,7 +540,8 @@ def show_compare(hosp, depts):
 
 picked = st.session_state.get("pick_disease") or {}
 topbar("콕콕", "병원 찾기")
-hero("FIND A HOSPITAL", "추천 진료과 기준으로\n내 주변 병원을 찾아보세요", "지도와 거리순 목록, 의사 구성, 진료과별 전문의 수를 한곳에서 비교해요.", ("전국 병원·약국", "의사·전문의 현황", "직선거리 기준"))
+hero("FIND A HOSPITAL", "추천 진료과 기준으로\n내 주변 병원을 찾아보세요", "지도와 거리순 목록, 의사 구성, 진료시간, 진료과별 전문의 수를 한곳에서 비교해요.",
+     ("전국 병원·약국", "의사·전문의 현황", "진료시간", "직선거리 기준"))
 st.page_link("main.py", label="증상 다시 선택")
 
 if not (HIRA or KAKAO):
@@ -478,9 +549,8 @@ if not (HIRA or KAKAO):
     st.stop()
 
 if picked:
-    st.markdown(f"### {html.escape(picked.get('n', ''))} "
-                + (f"<span style='color:#6B7684;font-size:.9rem'>상병코드 {html.escape(str(picked.get('c', '')))}</span>" if picked.get("c") else ""),
-                unsafe_allow_html=True)
+    st.markdown(f"### {esc(picked.get('n', ''))} "
+                + (f"<span style='color:#6B7684;font-size:.9rem'>상병코드 {esc(picked.get('c', ''))}</span>" if picked.get("c") else ""), unsafe_allow_html=True)
 
 loc = current_location()
 c1, c2, c3, c4 = st.columns([1.4, 1.4, 1.6, 0.6], vertical_alignment="bottom")
@@ -496,9 +566,8 @@ with c2:
             st.rerun()
 with c3:
     recommended = picked.get("depts", [])
-    default = [x for x in recommended if x in DEPT or x.endswith(("내과", "외과"))] or ["내과"]
-    options = sorted(set(list(DEPT) + default + [x for x in recommended if dept_code(x)]))
-    depts = st.multiselect("진료과", options, default=default)
+    default = [x for x in recommended if base_dept(x)] or ["내과"]
+    depts = st.multiselect("진료과", sorted(set(DEPT) | set(default)), default=default)
 with c4:
     if st.button("내 위치", help="현재 위치로 이동", use_container_width=True):
         st.session_state.pop("loc", None)
@@ -509,7 +578,7 @@ radius = st.pills("검색 반경", [3, 5, 10, 20, 30], format_func=lambda x: f"{
 lat, lng = loc["lat"], loc["lng"]
 st.caption(f"{loc['label']} 기준")
 if recommended:
-    st.markdown("**추천 진료과** &nbsp;" + "".join(f'<span class="chip">{html.escape(x)}</span>' for x in recommended), unsafe_allow_html=True)
+    st.markdown("**추천 진료과** &nbsp;" + "".join(f'<span class="chip">{esc(x)}</span>' for x in recommended), unsafe_allow_html=True)
 
 ph = st.empty()
 ph.markdown(skel(3), unsafe_allow_html=True)
@@ -525,16 +594,14 @@ if warn:
 
 left, right = st.columns([1.5, 1], gap="large")
 with left:
-    shown = pd.concat([hosp.head(60), pharmacies.head(20)]) if not df.empty else df
-    components.html(map_html([lat, lng], radius, shown), height=640)
+    components.html(map_html([lat, lng], radius, pd.concat([hosp.head(60), pharmacies.head(20)]) if not df.empty else df), height=640)
     st.caption("지도의 숫자는 가까운 순위 상위 5곳이에요. 점을 누르면 상세가 보여요.")
 with right:
     if hosp.empty:
         st.markdown('<div class="empty"><b>반경 안에서 병원을 찾지 못했어요</b><br>반경을 넓히거나 진료과를 바꿔 보세요.</div>', unsafe_allow_html=True)
     else:
         st.markdown(kpis([("병원", f"{cnt(len(hosp))}곳"), ("가장 가까운 곳", f"{hosp['dist'].min():.1f}km"),
-                          ("가장 가까운 병원", f'<span style="font-size:.95rem">{html.escape(hosp.loc[0, "name"])}</span>')]),
-                    unsafe_allow_html=True)
+                          ("가장 가까운 병원", f'<span style="font-size:.95rem">{esc(hosp.loc[0, "name"])}</span>')]), unsafe_allow_html=True)
         tab_near, tab_pharm = st.tabs(["가까운순", "약국"])
         with tab_near, st.container(height=520, border=False):
             for i, r in hosp.head(12).iterrows():
@@ -547,8 +614,11 @@ with right:
         st.caption("진료과 필터는 심평원 진료과목 코드와 병원 이름으로 적용돼요. 순서는 직선거리 기준이고 공식 평가가 아니에요.")
 
 if not hosp.empty:
-    t_doc, t_cmp = st.tabs(["의료진 정보", "진료과별 전문의 비교"])
-    with t_doc:
+    if DETAIL_ON:
+        t_doc, t_cmp = st.tabs(["의료진 · 진료시간", "진료과별 전문의 비교"])
+        with t_doc:
+            show_doctors(hosp)
+        with t_cmp:
+            show_compare(hosp, depts)
+    else:
         show_doctors(hosp)
-    with t_cmp:
-        show_compare(hosp, depts)

@@ -45,7 +45,7 @@
             rgba(49, 130, 246, 0.04) 60%,
             rgba(49, 130, 246, 0) 100%
           ),
-          #ffffff;
+          #fff;
         box-shadow: 0 2px 12px rgba(25, 31, 40, 0.05);
       }
       .rbh polygon {
@@ -109,7 +109,7 @@
         hand: "아래팔 · 손목 · 손",
         abdomen: "배 · 소화기",
         flank: "옆구리",
-        pelvis: "골반 · 사타구니",
+        pelvis: "골반 · 사타구니 · 생식",
         hip: "엉덩이 · 고관절",
         upper_back: "등",
         lower_back: "허리",
@@ -120,22 +120,19 @@
       const $ = (id) => document.getElementById(id);
       const state = { sel: null, side: "anterior" };
       let highlighter = null,
-        create = null;
-
+        create = null,
+        lastH = 0;
       const send = (type, data) =>
         window.parent.postMessage(
           { isStreamlitMessage: true, type, ...data },
           "*",
         );
-
-      let lastH = 0;
       function resize() {
         const h = Math.ceil(document.body.getBoundingClientRect().height) + 4;
         if (h === lastH) return;
         lastH = h;
         send("streamlit:setFrameHeight", { height: h });
       }
-
       function draw() {
         $("front").className = state.side === "anterior" ? "on" : "";
         $("back").className = state.side === "posterior" ? "on" : "";
@@ -159,7 +156,6 @@
         });
         requestAnimationFrame(resize);
       }
-
       function pick(id) {
         state.sel = id;
         draw();
@@ -168,7 +164,6 @@
           dataType: "json",
         });
       }
-
       $("front").onclick = () => {
         state.side = "anterior";
         draw();
@@ -178,7 +173,6 @@
         draw();
       };
       $("whole").onclick = () => pick("whole");
-
       window.addEventListener("message", (e) => {
         if (e.data && e.data.type === "streamlit:render") {
           state.sel = (e.data.args || {}).sel || null;
@@ -186,7 +180,6 @@
           resize();
         }
       });
-
       try {
         const mod =
           await import("https://cdn.jsdelivr.net/npm/body-highlighter/+esm");

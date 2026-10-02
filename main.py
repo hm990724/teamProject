@@ -1,4 +1,3 @@
-import html
 import json
 import math
 import os
@@ -12,26 +11,24 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-from common import bars, donut, env, hero, hira_get, kpis, setup, skel, table_html, topbar, vbars
+from common import bars, donut, env, esc, hero, hira_get, kpis, setup, skel, table_html, topbar, vbars
 
 setup("콕콕")
 
-HIRA_DISEASE = env("HIRA_DISEASE_SERVICE_KEY")
-GEMINI = env("GEMINI_API_KEY")
+HIRA_DISEASE, GEMINI = env("HIRA_DISEASE_SERVICE_KEY"), env("GEMINI_API_KEY")
 ROOT = Path(__file__).resolve().parent
 HOSPITAL_PAGE = "pages/2_hospital_finder.py"
-HOSPITAL_FILE = ROOT / "pages" / "2_hospital_finder.py"
+HOSPITAL_FILE = ROOT / HOSPITAL_PAGE
 DISS = "diseaseInfoService1"
 COLS = ["질환명", "상병코드"]
 LEVELS = ("높음", "중간", "낮음")
 SEVS = ["가벼워요", "보통이에요", "꽤 아파요", "참기 힘들어요"]
 SEXES = ["남성", "여성"]
 
-candidates_dir = [ROOT / "body_map", ROOT.parent / "body_map", Path.cwd() / "body_map"]
-map_dir = next((p for p in candidates_dir if (p / "index.html").exists()), None)
+map_dir = next((p for p in (ROOT / "body_map", ROOT.parent / "body_map", Path.cwd() / "body_map") if (p / "index.html").exists()), None)
 if map_dir is None:
     st.error("`body_map/index.html` 파일을 찾지 못했어요.")
-    st.code(str(candidates_dir[0] / "index.html"))
+    st.code(str(ROOT / "body_map" / "index.html"))
     st.stop()
 body_map = components.declare_component("body_map", path=str(map_dir))
 
@@ -52,12 +49,10 @@ REGIONS = {
     "calf": ("종아리 · 발", ["M", "I8", "E1"], ["정형외과", "혈관외과", "내분비내과"]),
     "whole": ("전신 · 피부 · 정신", ["D", "E", "L", "F"], ["가정의학과", "피부과", "정신건강의학과"]),
 }
-
 ICD_DEPT = {"A": ["내과"], "B": ["내과"], "C": ["내과"], "D": ["내과"], "E": ["내분비내과"], "F": ["정신건강의학과"],
             "G": ["신경과"], "H": ["안과", "이비인후과"], "I": ["순환기내과"], "J": ["호흡기내과"], "K": ["소화기내과"],
             "L": ["피부과"], "M": ["정형외과"], "N": ["비뇨의학과"], "O": ["산부인과"], "P": ["소아청소년과"],
             "Q": ["소아청소년과"], "R": ["가정의학과"], "S": ["정형외과"], "T": ["정형외과"]}
-
 RARE = [("모야모야병", "I675"), ("근위축성 측삭경화증(루게릭병)", "G122"), ("중증 근무력증", "G700"),
         ("다발성 경화증", "G35"), ("헌팅턴병", "G10"), ("낭성 섬유증", "E84"), ("마르팡 증후군", "Q874"),
         ("길랑-바레 증후군", "G610"), ("폰 빌레브란트병", "D680"), ("파브리병", "E752"), ("고셔병", "E752"),
@@ -65,8 +60,9 @@ RARE = [("모야모야병", "I675"), ("근위축성 측삭경화증(루게릭병
         ("척수성 근위축증", "G120"), ("베체트병", "M352"), ("타카야수 동맥염", "M314"), ("전신 경화증", "M34"),
         ("유전성 혈관부종", "D841"), ("폐동맥 고혈압", "I270")]
 
-RED = ("의식", "경련", "발작", "호흡곤란", "숨을 못", "숨이 안", "마비", "식은땀", "피를 토", "혈변", "검은 변",
-       "시력을 잃", "말이 어눌", "실신", "쓰러")
+RED = ("의식을 잃", "의식이 없", "의식이 흐", "경련", "발작", "호흡곤란", "숨을 못", "숨이 안", "마비", "식은땀",
+       "피를 토", "혈변", "검은 변", "시력을 잃", "말이 어눌", "실신", "쓰러")
+NEG_AFTER, NEG_BEFORE = re.compile(r"없|않|아니|괜찮|안 "), ("안 ", "없는", "아닌")
 EMERGENCY = "응급 가능성이 있어요. 지체하지 말고 119에 연락하거나 가까운 응급실로 가세요."
 
 
@@ -74,18 +70,26 @@ def txt(x):
     return x if isinstance(x, str) else ""
 
 
-# ───────────────────────── 질환 목록 (심평원) ─────────────────────────
+def red_flags(text):
+    hits = []
+    for w in RED:
+        for m in re.finditer(re.escape(w), text):
+            tail = re.split(r"[.!?\n]", text[m.end(): m.end() + 10])[0]
+            head = text[max(0, m.start() - 6): m.start()]
+            if not NEG_AFTER.search(tail) and not any(n in head for n in NEG_BEFORE):
+                hits.append(w)
+                break
+    return hits
+
+
 def is_disease(code, name):
-    if not code or not name or code[0].upper() in "VWXY":
-        return False
-    return len(name) <= 60 and "진료를 받은" not in name and "해당상병" not in name
+    return bool(code and name) and code[0].upper() not in "VWXY" and len(name) <= 60 and "진료를 받은" not in name and "해당상병" not in name
 
 
 def diss_pages(**extra):
     out, page = [], 1
     while page <= 40:
-        items, total, _ = hira_get(f"{DISS}/getDissNameCodeList1",
-                                   {"numOfRows": 500, "pageNo": page, "medTp": 1, **extra}, HIRA_DISEASE)
+        items, total, _ = hira_get(f"{DISS}/getDissNameCodeList1", {"numOfRows": 500, "pageNo": page, "medTp": 1, **extra}, HIRA_DISEASE)
         out += items
         if not items or len(out) >= total:
             break
@@ -110,7 +114,7 @@ def icd_list(prefixes: tuple):
     for pf in prefixes:
         out.update(collect(diss_pages(sickType=2, diseaseType="SICK_CD", searchText=pf), lambda c: c.startswith(pf)))
     for name, code in RARE:
-        if any(code.startswith(pf) for pf in prefixes):
+        if code.startswith(prefixes):
             out.setdefault(name, code)
     if not out:
         raise RuntimeError("조회된 질환이 없어요.")
@@ -137,20 +141,16 @@ def name_search(q: str):
     return sorted(out.items(), key=lambda x: x[1])
 
 
-# ───────────────────────── 생성형 모델 호출 ─────────────────────────
 @st.cache_data(ttl=3600, show_spinner=False)
 def gemini_models():
-    r = requests.get("https://generativelanguage.googleapis.com/v1beta/models", timeout=15,
-                     headers={"x-goog-api-key": GEMINI}, params={"pageSize": 200})
+    r = requests.get("https://generativelanguage.googleapis.com/v1beta/models", timeout=15, headers={"x-goog-api-key": GEMINI}, params={"pageSize": 200})
     if r.status_code != 200:
         raise RuntimeError(f"모델 목록 조회 실패 HTTP {r.status_code} {r.text[:200]}")
-    names = [m["name"].split("/")[-1] for m in r.json().get("models", [])
-             if "generateContent" in m.get("supportedGenerationMethods", [])]
+    names = [m["name"].split("/")[-1] for m in r.json().get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
     ok = [n for n in names if "flash" in n and not re.search(r"image|tts|live|audio|thinking|exp|robotics|computer|embedding", n)]
     if not ok:
         raise RuntimeError("쓸 수 있는 flash 모델이 없어요: " + ", ".join(names[:8]))
-    return sorted(ok, key=lambda n: ("latest" not in n, [-int(x) for x in (re.findall(r"\d+", n) + ["0", "0"])[:2]],
-                                     "preview" in n, "lite" in n))
+    return sorted(ok, key=lambda n: ("latest" not in n, [-int(x) for x in (re.findall(r"\d+", n) + ["0", "0"])[:2]], "preview" in n, "lite" in n))
 
 
 def call_ai(prompt):
@@ -179,13 +179,10 @@ def call_ai(prompt):
 
 
 def parse_json(s):
-    """응답에서 첫 번째 JSON 객체만 읽는다 (코드펜스·뒤에 붙은 설명이 있어도 동작)."""
     s = s.strip()
-    obj, _ = json.JSONDecoder().raw_decode(s[s.index("{"):])
-    return obj
+    return json.JSONDecoder().raw_decode(s[s.index("{"):])[0]
 
 
-# ───────────────────────── 통계 응답 처리 ─────────────────────────
 ENDPOINTS = {"성별·연령별": "getDissByGenderAgeStats1", "입원·외래별": "getDissByHsptlzFrgnStats1",
              "요양기관 종별": "getDissByClassesStats1", "요양기관 지역별": "getDissByAreaStats1"}
 TOTAL = {"계", "합계", "전체", "소계", "total", "Total"}
@@ -242,7 +239,6 @@ def patient_field(meas):
 
 
 def verify(rows):
-    """'계' 행과 세부 항목 합계를 비교해 환자 수를 검산한다."""
     if not rows:
         return None
     df, meas, cats = tidy(rows)
@@ -252,8 +248,7 @@ def verify(rows):
     if not cats:
         return {"total": float(df[f].sum()), "status": "part", "parts": None, "diff": None}
     is_tot = df[cats].astype(str).isin(TOTAL)
-    t = df.loc[is_tot.all(axis=1), f]
-    p = df.loc[~is_tot.any(axis=1), f]
+    t, p = df.loc[is_tot.all(axis=1), f], df.loc[~is_tot.any(axis=1), f]
     s = float(p.sum()) if len(p) else None
     if len(t) and s is not None:
         tv = float(t.iloc[0])
@@ -268,8 +263,7 @@ def parse_band(s):
     nums = [int(x) for x in re.findall(r"\d+", str(s))]
     if not nums:
         return None
-    hi = 200 if re.search(r"이상|over|\+", str(s), re.I) else (nums[1] if len(nums) > 1 else nums[0])
-    return nums[0], hi
+    return nums[0], 200 if re.search(r"이상|over|\+", str(s), re.I) else nums[-1]
 
 
 def short_age(s):
@@ -281,11 +275,10 @@ def short_age(s):
         return f"{lo}+"
     if lo == 0 and hi == 9:
         return "0~9세"
-    return f"{lo}대" if (hi - lo == 9 and lo % 10 == 0) else (f"{lo}세" if lo == hi else f"{lo}~{hi}")
+    return f"{lo}대" if hi - lo == 9 and lo % 10 == 0 else f"{lo}세" if lo == hi else f"{lo}~{hi}"
 
 
 def profile(rows):
-    """성별·연령별 응답 → 연령 구간별/성별 환자 수"""
     if not rows:
         return None
     df, meas, cats = tidy(rows)
@@ -297,7 +290,7 @@ def profile(rows):
         return None
     age_c = next((c for c in cats if base[c].astype(str).map(lambda s: parse_band(s) is not None).mean() > 0.8), None)
     sex_c = next((c for c in cats if c != age_c and base[c].astype(str).str.contains("남|여").mean() > 0.8), None)
-    out = {"f": f, "age_c": age_c, "sex_c": sex_c, "cats": cats, "base": base}
+    out = {}
     if age_c:
         ages = base.groupby(age_c, sort=False)[f].sum()
         out["ages"] = ages.reindex(sorted(ages.index, key=lambda s: parse_band(str(s))[0]))
@@ -307,7 +300,6 @@ def profile(rows):
 
 
 def fit(prof, age, sex):
-    """내 연령대·성별이 이 질환 환자 중 얼마나 차지하는지 (환자 수 기준, 인구 보정 아님)"""
     if not prof or "ages" not in prof or prof["ages"].sum() <= 0:
         return None
     ages = prof["ages"]
@@ -327,13 +319,10 @@ def fit(prof, age, sex):
 def fit_text(fi, sex=None):
     if not fi:
         return ""
-    parts = []
-    if "mine" in fi:
-        parts.append(f"내 연령대({short_age(fi['mine'])}) 비중 {fi['share']:.1f}% · {fi['n']}개 중 {fi['rank']}위")
-    else:
-        parts.append(f"가장 많은 연령대 {short_age(fi['peak'])}({fi['peak_share']:.0f}%)")
+    parts = [f"{short_age(fi['mine'])} 환자는 전체의 {fi['share']:.1f}% (연령 {fi['n']}구간 중 {fi['rank']}번째로 많음)" if "mine" in fi
+             else f"환자가 가장 많은 연령대 {short_age(fi['peak'])}({fi['peak_share']:.0f}%)"]
     if "sex_share" in fi and sex:
-        parts.append(f"{sex} {fi['sex_share']:.0f}%")
+        parts.append(f"환자 중 {sex} {fi['sex_share']:.0f}%")
     return " · ".join(parts)
 
 
@@ -341,17 +330,14 @@ _GS = {}
 
 
 def gs_fit(code, age, sex):
-    """후보 질환의 성별·연령 분포를 가져와 내 조건과 비교 (모듈 단위 캐시)"""
     if code not in _GS:
         try:
-            rows, *_ = fetch_rows(ENDPOINTS["성별·연령별"], code)
-            _GS[code] = profile(rows)
+            _GS[code] = profile(fetch_rows(ENDPOINTS["성별·연령별"], code)[0])
         except Exception:  # noqa: BLE001
             _GS[code] = None
     return fit(_GS[code], age, sex)
 
 
-# ───────────────────────── 분석 파이프라인 ─────────────────────────
 def candidates(df, kws, limit=40):
     names, n = df["질환명"], len(df)
     score = pd.Series(0.0, index=df.index)
@@ -365,12 +351,15 @@ def candidates(df, kws, limit=40):
 
 
 def overview(ctx):
-    prompt = (ctx + "\n아래 JSON 객체로만 답하세요. "
-              '{"opinion":"환자 표현과 나이·성별을 근거로 한 종합 소견 3~4문장","emergency":true,"depts":["진료과"],'
-              '"keywords":["질환명에 들어갈 법한 한글 단어(예: 협심증, 추간판, 모야모야)"],"advice":"생활 안내 한 문장"}. '
-              "depts는 최대 3개, keywords는 최대 10개. 흔한 질환뿐 아니라 증상과 맞는 희귀질환 이름도 일부 포함하세요. "
-              "응급 가능성이 있으면 emergency를 true로. 진단이 아니라 병원을 찾기 위한 참고용이라는 점을 소견에 반영하세요.")
-    return parse_json(call_ai(prompt))
+    return parse_json(call_ai(
+        ctx + "\n아래 JSON 객체로만 답하세요. "
+        '{"opinion":"환자 표현과 나이·성별을 근거로 한 종합 소견 3~4문장","emergency":false,"emergency_reason":"",'
+        '"depts":["진료과"],"keywords":["질환명에 들어갈 법한 한글 단어(예: 협심증, 추간판, 모야모야)"],"advice":"생활 안내 한 문장"}. '
+        "depts는 최대 3개, keywords는 최대 10개. 흔한 질환뿐 아니라 증상과 맞는 희귀질환 이름도 일부 포함하세요. "
+        "emergency는 기본값이 false예요. 의식 저하·경련, 심한 호흡곤란, 갑자기 시작된 극심한 흉통, 한쪽 마비나 말 어눌함, "
+        "토혈·혈변·대량 출혈, 극심한 복통처럼 지금 당장 응급 처치가 필요해 보일 때만 true로 하세요. "
+        "감기·기침·콧물·인후통·미열·몸살, 가벼운 통증, 오래된 만성 증상은 반드시 false예요. "
+        "애매하면 false로 하고, true면 emergency_reason에 근거가 된 환자 표현을 적으세요. 진단이 아니라 참고용이라는 점을 소견에 반영하세요."))
 
 
 def rank(ctx, opinion, cand, hints):
@@ -387,8 +376,7 @@ def rank(ctx, opinion, cand, hints):
         code = str(p.get("code", "")).strip()
         if code in by_code and code not in seen:
             seen.add(code)
-            level = p.get("level")
-            rows.append({"질환명": by_code[code], "상병코드": code, "가능성": level if level in LEVELS else "",
+            rows.append({"질환명": by_code[code], "상병코드": code, "가능성": p.get("level") if p.get("level") in LEVELS else "",
                          "근거": str(p.get("reason", ""))[:200]})
     return pd.DataFrame(rows[:6])
 
@@ -397,14 +385,18 @@ def rank(ctx, opinion, cand, hints):
 def analyze(region, text, sev, age, sex, prefixes, depts):
     df = pd.DataFrame(icd_list(prefixes), columns=COLS)
     pool = len(df)
-    who = (f"{age}세 " if age is not None else "") + (sex or "")
-    ctx = (f"불편한 부위: {REGIONS[region][0]}\n불편한 정도: {sev}\n"
-           + (f"환자: {who.strip()}\n" if who.strip() else "") + f"환자가 직접 쓴 설명: {text}\n")
+    who = ((f"{age}세 " if age is not None else "") + (sex or "")).strip()
+    ctx = f"불편한 부위: {REGIONS[region][0]}\n불편한 정도: {sev}\n" + (f"환자: {who}\n" if who else "") + f"환자가 직접 쓴 설명: {text}\n"
     ai, err, pick_err = {}, "", ""
     try:
         ai = overview(ctx)
     except Exception as e:  # noqa: BLE001
         err = str(e)[:250]
+
+    flags = red_flags(text)
+    why = str(ai.get("emergency_reason") or "").strip()
+    ai_em = ai.get("emergency") is True and bool(why) and sev in SEVS[2:]
+    emergency = {"on": bool(flags) or ai_em, "why": (f"'{', '.join(flags)}' 표현이 있어요" if flags else why)[:120]}
 
     ai_kws = [k for k in ai.get("keywords", []) if isinstance(k, str)]
     kws = {}
@@ -430,22 +422,17 @@ def analyze(region, text, sev, age, sex, prefixes, depts):
     if extra:
         df = pd.concat([df, pd.DataFrame(extra, columns=COLS)]).drop_duplicates("상병코드").reset_index(drop=True)
     cand = candidates(df, kws)
-    names = df["질환명"]
-    kw_hit = sorted(((k, int(names.str.contains(k, regex=False).sum())) for k in kws), key=lambda t: (-kws[t[0]], -t[1]))
+    kw_hit = sorted(((k, int(df["질환명"].str.contains(k, regex=False).sum())) for k in kws), key=lambda t: (-kws[t[0]], -t[1]))
     kw_hit = [t for t in kw_hit if t[1] > 0][:8]
 
-    # 나이·성별을 반영한 환자 분포 (상위 후보 10개)
     fits = {}
     if (age is not None or sex) and not cand.empty:
-        top_codes = list(cand["상병코드"].head(10))
+        codes = list(cand["상병코드"].head(10))
         with ThreadPoolExecutor(5) as ex:
-            for c, fi in zip(top_codes, ex.map(lambda c: gs_fit(c, age, sex), top_codes)):
-                if fi:
-                    fits[c] = fi
+            fits = {c: fi for c, fi in zip(codes, ex.map(lambda c: gs_fit(c, age, sex), codes)) if fi}
     hints = {c: fit_text(fi, sex) for c, fi in fits.items()}
 
-    table = cand.head(6).assign(가능성="", 근거="")
-    ranked = False
+    table, ranked = cand.head(6).assign(가능성="", 근거=""), False
     if not GEMINI:
         pick_err = "GEMINI_API_KEY가 없어서 키워드 순서로만 보여드려요."
     elif not cand.empty:
@@ -461,9 +448,13 @@ def analyze(region, text, sev, age, sex, prefixes, depts):
     table["일치어"] = table["질환명"].map(lambda n: sorted([k for k in kws if k in n], key=lambda k: -kws[k])[:4])
     table["연령"] = table["상병코드"].map(lambda c: hints.get(c, ""))
     meta = {"pool": pool, "pool_all": len(df), "kw_total": len(kws), "kw_ai": len(ai_kws), "kw_hit": kw_hit,
-            "cand": len(cand), "ranked": ranked, "ai_ok": bool(ai), "fit_n": len(fits), "age": age, "sex": sex}
-    return {"ai": ai, "err": err, "pick_err": pick_err, "table": table, "meta": meta,
+            "cand": len(cand), "ranked": ranked, "fit_n": len(fits), "age": age, "sex": sex}
+    return {"ai": ai, "err": err, "pick_err": pick_err, "table": table, "meta": meta, "emergency": emergency,
             "depts": (ai.get("depts") or list(depts))[:3]}
+
+
+def _norm(s):
+    return re.sub(r"[\s·\-,]", "", re.sub(r"\s*[\[\(].*?[\]\)]", "", s))
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -471,16 +462,20 @@ def wiki_summary(name):
     try:
         n = re.sub(r"\s*[\[\(].*?[\]\)]", "", name).strip() or name
         r = requests.get("https://ko.wikipedia.org/w/api.php", timeout=8, headers={"User-Agent": "body-finder/1.0"}, params={
-            "action": "query", "format": "json", "generator": "search", "gsrsearch": n, "gsrlimit": 1, "prop": "extracts|info",
-            "exintro": 1, "explaintext": 1, "exsentences": 4, "inprop": "url", "redirects": 1})
-        p = next(iter(r.json()["query"]["pages"].values()))
-        return p.get("extract", ""), p.get("fullurl", "")
+            "action": "query", "format": "json", "generator": "search", "gsrsearch": n, "gsrlimit": 5, "prop": "extracts|info",
+            "exintro": 1, "explaintext": 1, "exsentences": 4, "exlimit": "max", "inprop": "url", "redirects": 1})
+        pages = sorted(r.json().get("query", {}).get("pages", {}).values(), key=lambda p: p.get("index", 99))
+        key = _norm(n)
+        for p in pages:
+            t = _norm(p.get("title", ""))
+            if p.get("extract") and len(t) >= 2 and (t == key or (len(t) >= 3 and key.endswith(t)) or (len(key) >= 3 and t.startswith(key))):
+                return p["extract"], p.get("fullurl", "")
     except Exception:  # noqa: BLE001
-        return "", ""
+        pass
+    return "", ""
 
 
-# ───────────────────────── 화면 조각 ─────────────────────────
-def go(name, code, depts=()):
+def go(name, code="", depts=()):
     if not HOSPITAL_FILE.exists():
         st.error("`pages/2_hospital_finder.py` 파일이 없어요. 병원 화면 파일을 pages/ 폴더에 넣어 주세요.")
         return
@@ -490,23 +485,23 @@ def go(name, code, depts=()):
 
 def show_age_sex(info, age, sex):
     prof = profile(info["rows"])
-    if not prof or "ages" not in prof:
-        return False
     fi = fit(prof, age, sex)
-    ages = prof["ages"]
-    mine = fi.get("mine") if fi else None
+    if not fi:
+        return False
+    ages, mine = prof["ages"], fi.get("mine")
     msg = f"환자가 가장 많은 연령대는 {short_age(fi['peak'])}(전체의 {fi['peak_share']:.1f}%)예요."
-    if fi and "mine" in fi:
-        msg += f" 입력하신 연령대({short_age(mine)})는 {fi['share']:.1f}%로 {fi['n']}개 구간 중 {fi['rank']}위예요."
-    if fi and "sex_share" in fi:
-        msg += f" 성별로는 {sex}이 {fi['sex_share']:.0f}%예요."
-    st.markdown(f'<div class="insight">{html.escape(msg)}</div>', unsafe_allow_html=True)
+    if mine is not None:
+        msg += f" 입력하신 연령대({short_age(mine)})는 {fi['share']:.1f}%로, 연령 {fi['n']}구간 중 {fi['rank']}번째로 환자가 많아요."
+    if "sex_share" in fi:
+        msg += f" 환자 중 {sex}은 {fi['sex_share']:.0f}%예요."
+    msg += f" (비교한 구간: {', '.join(short_age(b) for b in ages.index)})"
+    st.markdown(f'<div class="insight">{esc(msg)}</div>', unsafe_allow_html=True)
     c1, c2 = st.columns([1.7, 1], gap="medium")
     c1.markdown('<div class="chart"><div class="ct">연령대별 환자 비중</div><div class="cs">전체 환자 중 각 연령대가 차지하는 비율</div>'
                 + vbars([(short_age(b), v, b) for b, v in ages.items()], mine=mine) + "</div>", unsafe_allow_html=True)
     if "sex" in prof:
-        c2.markdown('<div class="chart"><div class="ct">성별 비중</div><div class="cs">전체 환자 기준</div>'
-                    + donut(list(prof["sex"].items())) + "</div>", unsafe_allow_html=True)
+        c2.markdown('<div class="chart"><div class="ct">성별 비중</div><div class="cs">전체 환자 기준</div>' + donut(list(prof["sex"].items())) + "</div>",
+                    unsafe_allow_html=True)
     return True
 
 
@@ -529,9 +524,8 @@ def show_stat(label, info, age=None, sex=None):
             s = base.groupby(base[cats].astype(str).agg(" · ".join, axis=1), sort=False)[f].sum()
             if label == "요양기관 지역별":
                 s = s.sort_values(ascending=False).head(10)
-            st.markdown(f'<div class="chart"><div class="ct">{html.escape(label)} 환자 수</div>'
-                        f'<div class="cs">가장 많은 항목이 진하게 표시돼요</div>' + bars(list(s.items()), top=True) + "</div>",
-                        unsafe_allow_html=True)
+            st.markdown(f'<div class="chart"><div class="ct">{esc(label)} 환자 수</div><div class="cs">가장 많은 항목이 진하게 표시돼요</div>'
+                        + bars(list(s.items()), top=True) + "</div>", unsafe_allow_html=True)
             drawn = True
     if not drawn:
         st.caption("차트로 그릴 수 있는 환자 수 항목이 없어서 표로 보여드려요.")
@@ -539,9 +533,8 @@ def show_stat(label, info, age=None, sex=None):
         names = {}
         for c in cats + meas:
             n = label_of(c)
-            names[c] = f"{n}({c})" if n in names.values() else n  # 같은 한글명이 겹치면 원래 이름을 덧붙여 구분
-        show = df[cats + meas].rename(columns=names)
-        st.markdown(table_html(show, scroll=True), unsafe_allow_html=True)
+            names[c] = f"{n}({c})" if n in names.values() else n
+        st.markdown(table_html(df[cats + meas].rename(columns=names), scroll=True), unsafe_allow_html=True)
     st.caption(f"{info['year']}년 · 건강보험 · 주상병 기준 · 출처: 건강보험심사평가원 질병정보서비스 · 환자 수 기준이며 인구 대비 비율이 아니에요.")
 
 
@@ -551,7 +544,7 @@ def show_detail(name, code, depts, level=None, reason=None, tag="a"):
     with st.container(border=True):
         st.markdown(f"#### {name} · `{code}`")
         if level or reason:
-            st.caption(f"{('가능성 ' + level) if level else ''} {('· ' + reason) if reason else ''}")
+            st.caption(f"{('가능성 ' + level) if level else ''} {('· AI 코멘트: ' + reason) if reason else ''}")
         if st.button("가까운 병원 보기", type="primary", use_container_width=True, key=f"go_{tag}_{code}"):
             go(name, code, depts)
         ph = st.empty()
@@ -569,14 +562,14 @@ def show_detail(name, code, depts, level=None, reason=None, tag="a"):
         except Exception as e:  # noqa: BLE001
             v = {"error": f"환자 수를 계산하지 못했어요. ({str(e)[:80]})"}
         if v and v.get("total") is not None:
-            tag_ = {"ok": ("검산 일치", "ok"), "diff": ("검산 불일치", "warn"), "total": ("계 행 기준", "ok"), "part": ("합산값", "warn")}[v["status"]]
+            lab, cls = {"ok": ("합계 일치", "ok"), "diff": ("합계 불일치", "warn"), "total": ("계 행 기준", "ok"), "part": ("합산값", "warn")}[v["status"]]
             sub = ""
             if v.get("parts") is not None and v.get("diff") is not None:
                 sub = f"세부 합계 {v['parts']:,.0f}명 · 계 {v['total']:,.0f}명 · 차이 {v['diff']:.2f}%"
             elif v["status"] == "part":
                 sub = "'계' 행이 없어 세부 구간을 합산했어요. 연령 이동으로 일부 중복될 수 있어요."
-            st.markdown(kpis([(f"{info['year']}년 진료 환자 수 (건강보험)",
-                               f'{v["total"]:,.0f}명<span class="vf {tag_[1]}">{tag_[0]}</span>', sub)]), unsafe_allow_html=True)
+            st.markdown(kpis([(f"{info['year']}년 진료 환자 수 (건강보험)", f'{v["total"]:,.0f}명<span class="vf {cls}">{lab}</span>', sub)]),
+                        unsafe_allow_html=True)
         elif v and v.get("error"):
             st.caption(v["error"])
         else:
@@ -597,40 +590,41 @@ def show_detail(name, code, depts, level=None, reason=None, tag="a"):
 
 
 def row_html(i, name, code, level, reason, kws, agetxt):
-    name, code, level, reason, agetxt = txt(name), txt(code), txt(level), txt(reason), txt(agetxt)
+    name, code, level, reason, agetxt = map(txt, (name, code, level, reason, agetxt))
     cls = {"높음": "h", "중간": "m", "낮음": "l"}.get(level)
     badge = f'<span class="lv {cls}">가능성 {level}</span>' if cls else ""
-    why = f'<div class="sub">{html.escape(reason)}</div>' if reason else ""
-    chips = "".join(f'<span class="chip g">{html.escape(k)}</span>' for k in (kws if isinstance(kws, list) else []))
-    ag = f'<div class="sub" style="color:var(--bl2);font-weight:600;margin-top:2px">{html.escape(agetxt)}</div>' if agetxt else ""
+    why = f'<div class="sub"><span class="ai">AI 코멘트</span>{esc(reason)}</div>' if reason else ""
+    chips = "".join(f'<span class="chip g">{esc(k)}</span>' for k in (kws if isinstance(kws, list) else []))
+    ag = f'<div class="sub" style="color:var(--bl2);font-weight:600;margin-top:2px">{esc(agetxt)}</div>' if agetxt else ""
     return (f'<div class="rk" style="--i:{i}"><span class="rn{" top" if i == 0 else ""}">{i + 1}</span>'
-            f'<div style="min-width:0"><b>{html.escape(name)}</b>{badge}<div class="sub">{html.escape(code)}</div>{why}{ag}'
-            f'<div style="margin-top:6px">{chips}</div></div></div>')
+            f'<div style="min-width:0"><b>{esc(name)}</b>{badge}<div class="sub">{esc(code)}</div>{why}{ag}<div style="margin-top:6px">{chips}</div></div></div>')
 
 
 def explain(res, region):
-    m, label, prefixes = res["meta"], REGIONS[region][0], REGIONS[region][1]
+    m, (label, prefixes, _) = res["meta"], REGIONS[region]
     who = ", ".join(x for x in [f"{m['age']}세" if m["age"] is not None else "", m["sex"] or ""] if x)
     steps = [
-        ("부위로 범위 좁히기", f"'{label}'은 상병 분류 {', '.join(prefixes)} 계열로 보고, 질환 {m['pool']:,}건을 후보 풀로 잡았어요."),
+        ("부위로 범위 좁히기", f"'{label}'은 상병 분류 {', '.join(prefixes)} 계열로 보고, 질환 {m['pool']:,}건을 후보 풀로 잡았어요. (부위→분류 연결은 사람이 정한 규칙이에요)"),
         ("설명에서 단어 뽑기", f"AI가 제안한 질환명 단어 {m['kw_ai']}개와 직접 쓰신 단어를 합쳐 {m['kw_total']}개를 썼어요."),
         ("질환명과 맞춰 점수 매기기", f"흔하지 않은 단어가 맞을수록 높은 점수를 줘서 후보 {m['cand']}건을 추렸어요(풀 {m['pool_all']:,}건)."),
-        ("나이·성별 반영", (f"입력하신 {who} 기준으로 상위 후보 {m['fit_n']}건의 환자 분포를 비교해 참고 자료로 넘겼어요."
-                          if who and m["fit_n"] else "나이·성별을 입력하지 않았거나 통계를 가져오지 못해 이 단계는 건너뛰었어요.")),
-        ("최종 선택", ("AI가 후보 안에서만 최대 6개를 골랐어요. 가능성은 설명과 얼마나 잘 맞는지에 대한 상대적 판단이며 확률이 아니에요."
-                    if m["ranked"] else "AI 선택을 쓰지 못해서 점수 순서로 보여드렸어요.")),
+        ("나이·성별 반영", f"입력하신 {who} 기준으로 상위 후보 {m['fit_n']}건의 환자 분포를 비교해 참고 자료로 넘겼어요."
+         if who and m["fit_n"] else "나이·성별을 입력하지 않았거나 통계를 가져오지 못해 이 단계는 건너뛰었어요."),
+        ("최종 선택", "AI가 후보 안에서만 최대 6개를 골랐어요. 가능성은 설명과 얼마나 잘 맞는지에 대한 상대적 판단이며 확률이 아니에요."
+         if m["ranked"] else "AI 선택을 쓰지 못해서 점수 순서로 보여드렸어요."),
     ]
-    flow = "".join(f'<div class="rk" style="--i:{i}"><span class="rn">{i + 1}</span><div><b>{t}</b><div class="sub">{html.escape(d)}</div></div></div>'
+    flow = "".join(f'<div class="rk" style="--i:{i}"><span class="rn">{i + 1}</span><div><b>{t}</b><div class="sub">{esc(d)}</div></div></div>'
                    for i, (t, d) in enumerate(steps))
-    with st.expander("이 결과가 나온 과정", expanded=False):
+    with st.expander("이 결과가 나온 과정"):
         st.markdown(kpis([("후보 풀", f"{m['pool_all']:,}건"), ("추린 후보", f"{m['cand']}건"),
                           ("환자 분포 반영", f"{m['fit_n']}건"), ("최종 표시", f"{len(res['table'])}건")]), unsafe_allow_html=True)
         st.markdown(flow, unsafe_allow_html=True)
         if m["kw_hit"]:
-            st.markdown('<div class="chart" style="margin-top:12px"><div class="ct">많이 맞은 단어</div>'
-                        '<div class="cs">질환명에 해당 단어가 들어간 질환 수</div>' + bars(m["kw_hit"], unit="건", share=False) + "</div>",
-                        unsafe_allow_html=True)
+            st.markdown('<div class="chart" style="margin-top:12px"><div class="ct">많이 맞은 단어</div><div class="cs">질환명에 해당 단어가 들어간 질환 수</div>'
+                        + bars(m["kw_hit"], unit="건", share=False) + "</div>", unsafe_allow_html=True)
         st.caption("환자 분포는 건강보험 청구 환자 수 기준이라 인구 대비 비율이 아니에요. 나이·성별은 보조 단서로만 쓰여요.")
+        st.markdown('<div class="insight" style="font-weight:500">이 순위는 의학적 정확도를 따로 검증하지 않았어요. AI는 심평원 목록에 있는 질환명 안에서만 고르도록 제한해서 '
+                    '없는 병명을 지어내지는 못하지만, 목록 안에서 무엇이 증상과 가까운지는 AI의 판단이에요. 질환명에 증상 단어가 들어 있지 않으면 후보에 오르지 못할 수도 있어요.</div>',
+                    unsafe_allow_html=True)
 
 
 def disease_search(prefixes=None, depts=()):
@@ -664,17 +658,22 @@ def disease_search(prefixes=None, depts=()):
 
 
 def show_result(res, region):
-    ai, depts, table = res["ai"], res["depts"], res["table"]
+    ai, depts, table, em = res["ai"], res["depts"], res["table"], res["emergency"]
     if res["err"]:
         st.warning("종합 소견을 가져오지 못했어요. " + res["err"])
-    if ai.get("emergency"):
-        st.error(EMERGENCY)
+    if em["on"]:
+        st.error(EMERGENCY + (f"\n\n근거: {em['why']}" if em["why"] else ""))
     if ai.get("opinion"):
-        st.markdown('<div class="sec" style="margin-top:6px">증상 요약</div>', unsafe_allow_html=True)
-        body = html.escape(ai["opinion"]) + (f'<br><br><span style="color:#6B7684">{html.escape(ai["advice"])}</span>' if ai.get("advice") else "")
+        st.markdown('<div class="sec" style="margin-top:6px">AI 종합 소견 <span class="ai" style="margin:0">참고용</span></div>', unsafe_allow_html=True)
+        body = esc(ai["opinion"]) + (f'<br><br><span style="color:#6B7684">{esc(ai["advice"])}</span>' if ai.get("advice") else "")
         st.markdown(f'<div class="panel" style="line-height:1.7">{body}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sec" style="margin-top:6px">추천 진료과</div>' + "".join(f'<span class="chip">{html.escape(d)}</span>' for d in depts),
-                unsafe_allow_html=True)
+    st.markdown('<div class="sec" style="margin-top:6px">추천 진료과</div>' + "".join(f'<span class="chip">{esc(d)}</span>' for d in depts), unsafe_allow_html=True)
+    if depts:
+        if st.button("추천 진료과로 가까운 병원 찾기", type="primary", use_container_width=True, key="cta_all"):
+            go(f"{REGIONS[region][0]} 증상", "", depts)
+        for c, d in zip(st.columns(len(depts)), depts):
+            if c.button(f"{d} 병원", key=f"cta_{d}", use_container_width=True):
+                go(f"{d} 진료", "", [d])
     if table.empty:
         st.info("입력한 증상과 맞는 질환명을 찾지 못했어요. 증상을 더 자세히 적어 보세요.")
         return
@@ -694,7 +693,6 @@ def show_result(res, region):
         show_detail(detail[0], detail[1], depts, detail[2], detail[3], tag="r")
 
 
-# ───────────────────────── 페이지 ─────────────────────────
 topbar("콕콕", "건강 길잡이")
 hero("SYMPTOM GUIDE", "어디가 불편하세요?\n부위를 고르면 진료과와 병원을 안내해요", "", ("질환 통계", "진료과 추천", "병원·의료진 비교"))
 st.markdown('<div class="steps"><span><b>1</b>부위 선택</span><span><b>2</b>증상 입력</span><span><b>3</b>질환 확인</span><span><b>4</b>병원 찾기</span></div>',
@@ -710,16 +708,15 @@ region = st.session_state.get("region")
 
 with right:
     if st.button("병원 바로 찾기", key="nav_hosp", use_container_width=True):
-        if region in REGIONS and HOSPITAL_FILE.exists():
+        if region in REGIONS:
             r_ = st.session_state.get("res")
-            d_ = r_[1]["depts"] if r_ and r_[0] == region else REGIONS[region][2]
-            st.session_state["pick_disease"] = {"n": REGIONS[region][0] + " 부위", "c": "", "depts": list(d_)}
+            go(REGIONS[region][0] + " 부위", "", r_[1]["depts"] if r_ and r_[0] == region else REGIONS[region][2])
         else:
             st.session_state.pop("pick_disease", None)
-        st.switch_page(HOSPITAL_PAGE)
+            st.switch_page(HOSPITAL_PAGE)
     if region not in REGIONS:
-        st.markdown('<div class="panel"><b>불편한 부위를 눌러 주세요</b><br>'
-                    '<span class="sub">왼쪽 몸 그림에서 앞면·뒷면을 바꿔 가며 고를 수 있어요.</span></div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel"><b>불편한 부위를 눌러 주세요</b><br><span class="sub">왼쪽 몸 그림에서 앞면·뒷면을 바꿔 가며 고를 수 있어요.</span></div>',
+                    unsafe_allow_html=True)
         with st.expander("질환 이름으로 바로 찾기 (희귀질환 포함)"):
             disease_search()
     else:
@@ -732,11 +729,8 @@ with right:
         age_v = a.number_input("나이 (선택)", min_value=0, max_value=120, value=None, step=1, key="age_in", disabled=busy, placeholder="예) 34")
         sex_v = s_.segmented_control("성별 (선택)", SEXES, key="sex_in", disabled=busy)
         sev = st.segmented_control("불편한 정도", SEVS, default=SEVS[1], key="sev_in", disabled=busy) or SEVS[1]
-        if any(w in text for w in RED):
-            st.error(EMERGENCY)
-        clicked = st.button("분석 중이에요" if busy else "분석하기", type="primary", use_container_width=True,
-                            key="run_busy" if busy else "run_idle", disabled=busy or not text.strip())
-        if clicked:
+        if st.button("분석 중이에요" if busy else "분석하기", type="primary", use_container_width=True,
+                     key="run_busy" if busy else "run_idle", disabled=busy or not text.strip()):
             st.session_state["job"] = (region, text.strip(), sev, int(age_v) if age_v is not None else None, sex_v)
             st.session_state.pop("detail", None)
             st.rerun()
@@ -744,7 +738,7 @@ with right:
             st.markdown(skel(3), unsafe_allow_html=True)
             j = st.session_state["job"]
             try:
-                st.session_state["res"] = (j[0], analyze(j[0], j[1], j[2], j[3], j[4], tuple(REGIONS[j[0]][1]), tuple(REGIONS[j[0]][2])))
+                st.session_state["res"] = (j[0], analyze(*j, tuple(REGIONS[j[0]][1]), tuple(REGIONS[j[0]][2])))
                 st.session_state.pop("res_err", None)
             except Exception as e:  # noqa: BLE001
                 st.session_state.pop("res", None)
