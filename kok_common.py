@@ -1,5 +1,6 @@
 import html
 import os
+import re
 import xml.etree.ElementTree as ET
 from urllib.parse import unquote
 
@@ -372,8 +373,24 @@ def _gw_err(d):
     return " ".join(x for x in [h.get("errMsg", ""), h.get("returnAuthMsg", ""), f"(코드 {h.get('returnReasonCode', '?')})"] if x)
 
 
-def hira_get(path, params, key, timeout=15):
-    r = requests.get(f"{HIRA_BASE}/{path}", timeout=timeout, params={"serviceKey": key, "_type": "json", **params})
+_OK = {}
+
+
+def _variants(path):
+    svc, op = path.split("/", 1)
+    alts = [path]
+    if svc.endswith("1") and op.endswith("1"):
+        alts.append(f"{svc[:-1]}/{op[:-1]}")
+    elif svc.endswith("v2"):
+        alts.append(f"{svc[:-2]}/{op}")
+    elif not svc[-1].isdigit():
+        alts.append(f"{svc}1/{op}1")
+    return alts
+
+
+def _hira_once(path, params, key, timeout, scheme):
+    url = f"{scheme}://{HIRA_BASE.split('://', 1)[1]}/{path}"
+    r = requests.get(url, timeout=timeout, params={"serviceKey": key, "_type": "json", **params})
     raw, head = r.text[:1500], f"HTTP {r.status_code}"
     try:
         data = r.json()
@@ -399,3 +416,20 @@ def hira_get(path, params, key, timeout=15):
         raise RuntimeError(f"심평원 오류 {code}: {root.findtext('.//resultMsg') or ''}")
     items = [{c.tag: (c.text or "").strip() for c in it} for it in root.iter("item")]
     return items, int((root.findtext(".//totalCount") or "0").strip() or 0), raw
+
+
+def hira_get(path, params, key, timeout=15):
+    tries = [_OK[path]] if path in _OK else [(p, s) for p in _variants(path) for s in ("https", "http")]
+    first = None
+    for p, s in tries:
+        try:
+            out = _hira_once(p, params, key, timeout, s)
+            _OK[path] = (p, s)
+            return out
+        except requests.exceptions.RequestException as e:
+            first = first or e
+        except RuntimeError as e:
+            first = first or e
+            if not re.search(r"NO_OPENAPI|코드 (12|04|05)\)|HTTP 5\d\d", str(e)):
+                raise
+    raise first
