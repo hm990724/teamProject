@@ -53,12 +53,6 @@ ICD_DEPT = {"A": ["내과"], "B": ["내과"], "C": ["내과"], "D": ["내과"], 
             "G": ["신경과"], "H": ["안과", "이비인후과"], "I": ["순환기내과"], "J": ["호흡기내과"], "K": ["소화기내과"],
             "L": ["피부과"], "M": ["정형외과"], "N": ["비뇨의학과"], "O": ["산부인과"], "P": ["소아청소년과"],
             "Q": ["소아청소년과"], "R": ["가정의학과"], "S": ["정형외과"], "T": ["정형외과"]}
-RARE = [("모야모야병", "I675"), ("근위축성 측삭경화증(루게릭병)", "G122"), ("중증 근무력증", "G700"),
-        ("다발성 경화증", "G35"), ("헌팅턴병", "G10"), ("낭성 섬유증", "E84"), ("마르팡 증후군", "Q874"),
-        ("길랑-바레 증후군", "G610"), ("폰 빌레브란트병", "D680"), ("파브리병", "E752"), ("고셔병", "E752"),
-        ("프라더-윌리 증후군", "Q871"), ("레트 증후군", "F842"), ("두센 근이영양증", "G710"),
-        ("척수성 근위축증", "G120"), ("베체트병", "M352"), ("타카야수 동맥염", "M314"), ("전신 경화증", "M34"),
-        ("유전성 혈관부종", "D841"), ("폐동맥 고혈압", "I270")]
 
 RED = ("의식을 잃", "의식이 없", "의식이 흐", "경련", "발작", "호흡곤란", "숨을 못", "숨이 안", "마비", "식은땀",
        "피를 토", "혈변", "검은 변", "시력을 잃", "말이 어눌", "실신", "쓰러")
@@ -106,22 +100,19 @@ def collect(items, accept=lambda code: True):
     return out
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def icd_list(prefixes: tuple):
     if not HIRA_DISEASE:
         raise RuntimeError("HIRA_DISEASE_SERVICE_KEY가 없어요.")
     out = {}
     for pf in prefixes:
         out.update(collect(diss_pages(sickType=2, diseaseType="SICK_CD", searchText=pf), lambda c: c.startswith(pf)))
-    for name, code in RARE:
-        if code.startswith(prefixes):
-            out.setdefault(name, code)
     if not out:
         raise RuntimeError("조회된 질환이 없어요.")
     return sorted(out.items(), key=lambda x: x[1])
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def name_search(q: str):
     q = q.strip()
     if not HIRA_DISEASE or len(q) < 2:
@@ -133,9 +124,6 @@ def name_search(q: str):
                 out.setdefault(name, code)
         except Exception as e:  # noqa: BLE001
             last = e
-    for name, code in RARE:
-        if q in name:
-            out.setdefault(name, code)
     if not out and last:
         raise RuntimeError(str(last))
     return sorted(out.items(), key=lambda x: x[1])
@@ -215,7 +203,7 @@ def fetch_rows(endpoint, code):
 def disease_stats(code):
     if not HIRA_DISEASE:
         return {k: {"rows": [], "year": None, "note": "HIRA_DISEASE_SERVICE_KEY가 없어요.", "raw": ""} for k in ENDPOINTS}
-    with ThreadPoolExecutor(4) as ex:
+    with ThreadPoolExecutor(2) as ex:
         res = list(ex.map(lambda ep: fetch_rows(ep, code), ENDPOINTS.values()))
     return {k: dict(zip(("rows", "year", "note", "raw"), r)) for k, r in zip(ENDPOINTS, res)}
 
@@ -428,7 +416,7 @@ def analyze(region, text, sev, age, sex, prefixes, depts):
     fits = {}
     if (age is not None or sex) and not cand.empty:
         codes = list(cand["상병코드"].head(10))
-        with ThreadPoolExecutor(5) as ex:
+        with ThreadPoolExecutor(3) as ex:
             fits = {c: fi for c, fi in zip(codes, ex.map(lambda c: gs_fit(c, age, sex), codes)) if fi}
     hints = {c: fit_text(fi, sex) for c, fi in fits.items()}
 
@@ -628,7 +616,7 @@ def explain(res, region):
 
 
 def disease_search(prefixes=None, depts=()):
-    q = st.text_input("질환명 검색", placeholder="예) 협심증, 모야모야병, 루게릭", key="gs_q", label_visibility="collapsed").strip()
+    q = st.text_input("질환명 검색", placeholder="예) 협심증, 당뇨병, 천식", key="gs_q", label_visibility="collapsed").strip()
     try:
         if q:
             if len(q) < 2:
@@ -640,7 +628,7 @@ def disease_search(prefixes=None, depts=()):
             found = pd.DataFrame(icd_list(tuple(prefixes)), columns=COLS)
             st.caption(f"선택한 부위의 질환 {len(found)}건 · 다른 질환은 위에서 이름으로 검색하세요")
         else:
-            st.caption("질환 이름의 일부만 입력해도 돼요. 희귀질환도 함께 검색돼요.")
+            st.caption("질환 이름의 일부만 입력해도 돼요.")
             return
         if found.empty:
             st.info("검색 결과가 없어요. 다른 표기(띄어쓰기·한자어)로 다시 검색해 보세요.")
@@ -694,7 +682,7 @@ def show_result(res, region):
 
 
 topbar("콕콕", "맞춤형 의료 서비스")
-hero("SYMPTOM GUIDE", "어디가 불편하세요?\n부위를 고르면 진료과와 병원을 안내해요", "", ("질환 통계", "진료과 추천", "병원·의료진 비교"))
+hero("SYMPTOM GUIDE", "어디가 불편하세요?\n부위를 고르면 진료과와 병원을 안내해요", "3분 안에 진료과를 정하고, 지금 문 연 병원까지 찾아요.", ("질환 통계", "진료과 추천", "병원·의료진 비교"))
 st.markdown('<div class="steps"><span><b>1</b>부위 선택</span><span><b>2</b>증상 입력</span><span><b>3</b>질환 확인</span><span><b>4</b>병원 찾기</span></div>',
             unsafe_allow_html=True)
 
@@ -717,7 +705,7 @@ with right:
     if region not in REGIONS:
         st.markdown('<div class="panel"><b>불편한 부위를 눌러 주세요</b><br><span class="sub">왼쪽 몸 그림에서 앞면·뒷면을 바꿔 가며 고를 수 있어요.</span></div>',
                     unsafe_allow_html=True)
-        with st.expander("질환 이름으로 바로 찾기 (희귀질환 포함)"):
+        with st.expander("질환 이름으로 바로 찾기"):
             disease_search()
     else:
         label, prefixes, depts = REGIONS[region]
@@ -751,7 +739,7 @@ with right:
         res = st.session_state.get("res")
         if res and res[0] == region:
             show_result(res[1], region)
-        with st.expander("질환 전체 목록 · 이름으로 검색 (희귀질환 포함)"):
+        with st.expander("질환 전체 목록 · 이름으로 검색"):
             disease_search(prefixes, depts)
 
 st.markdown('<div class="note">이 화면은 진단이 아니라 진료과와 병원을 찾기 위한 안내예요. 관련 질환은 입력한 설명과 나이·성별을 바탕으로 한 추정이에요. '

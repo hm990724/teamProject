@@ -94,7 +94,7 @@ DETAIL_VERSIONS = ("2.8", "2.7")
 DD_OPS = [("getSpcSbjtSdrInfo", ("dtlSdrCnt", "sdrCnt", "dgsbjtPrSdrCnt")), ("getDgsbjtInfo", ("dgsbjtPrSdrCnt", "dtlSdrCnt", "sdrCnt"))]
 DAYS = [("월", "Mon"), ("화", "Tue"), ("수", "Wed"), ("목", "Thu"), ("금", "Fri"), ("토", "Sat"), ("일", "Sun")]
 KST = timezone(timedelta(hours=9))
-_DD, _DD_BEST = {}, []
+_DD, _DD_BEST, _HRS = {}, [], {}
 
 
 def base_dept(name):
@@ -291,6 +291,66 @@ def open_state(rows, now):
     return ("closed", f"진료 전 · {s // 60:02d}:{s % 60:02d} 시작") if m < s else ("closed", "오늘 진료가 끝났어요")
 
 
+def open_map(df):
+    if not DETAIL_ON or df.empty:
+        return {}
+    now = datetime.now(KST)
+
+    def one(y):
+        try:
+            rows = parse_hours(hospital_detail(y))
+            _HRS[y] = rows
+            return y, open_state(rows, now)
+        except Exception as e:  # noqa: BLE001
+            detail_off(e)
+            return y, None
+
+    with ThreadPoolExecutor(2) as ex:
+        return dict(ex.map(one, [y for y in df["ykiho"].head(15) if y]))
+
+
+def summary(hosp, depts, states):
+    near = hosp.iloc[0]
+    n_open = sum((v or ("",))[0] == "open" for v in states.values())
+
+    def pre(y):
+        v = states.get(y)
+        return bool(v) and v[1].startswith("진료 전")
+
+    nxt = next((f"{r['name']} · {states[r['ykiho']][1].replace('진료 전 · ', '')}" for _, r in hosp.iterrows() if pre(r["ykiho"])), None)
+    if not states:
+        live = ("지금 진료 중", "확인 불가", "진료시간 API 미연결", "idle")
+    elif n_open:
+        live = ("지금 진료 중", f"{n_open}곳", f"가까운 {len(states)}곳 중", "live")
+    else:
+        live = ("지금 진료 중", "0곳", f"곧 여는 곳 · {nxt}" if nxt else f"가까운 {len(states)}곳 중 문 연 곳이 없어요", "idle")
+    cells = [("추천 진료과", " · ".join(depts) or "전체", "선택한 진료과 기준", ""),
+             ("가장 가까운 병원", near["name"], f"{near['dist']:.1f}km · {near['type']}", ""), live]
+    return '<div class="sum">' + "".join(f'<div class="{c}"><small>{esc(kk)}</small><b>{esc(v)}</b><em>{esc(d)}</em></div>' for kk, v, d, c in cells) + "</div>"
+
+
+SLOTS = [("평일 낮 12시", 2, 720), ("평일 저녁 7시", 2, 1140), ("평일 밤 10시", 2, 1320), ("토요일 오후 2시", 5, 840), ("일요일 낮 12시", 6, 720)]
+
+
+def gap_counts(states):
+    ys = [y for y in states if y in _HRS and any(r[1] is not None for r in _HRS[y])]
+    return len(ys), [(lab, sum(1 for y in ys if (r := _HRS[y][d])[1] is not None and r[1] <= m < r[2])) for lab, d, m in SLOTS]
+
+
+def show_gap(states):
+    rep, counts = gap_counts(states)
+    if not rep:
+        return
+    low = min(counts, key=lambda t: t[1])
+    msg = (f"진료시간을 신고한 가까운 병원 {rep}곳 중 ‘{low[0]}’에 문 연 곳은 {low[1]}곳으로 가장 적어요."
+           + (" 이 시간대에는 응급실이나 야간 진료 병원을 미리 확인해 두세요." if low[1] <= 1 else ""))
+    st.markdown('<div class="sec">의료 공백 진단</div><div class="sub" style="margin:-8px 0 12px">내 주변 병원이 언제 문을 여는지 시간대별로 세어, 진료가 비는 시간을 찾아내요.</div>'
+                f'<div class="insight">{esc(msg)}</div>'
+                '<div class="chart"><div class="ct">시간대별 진료 가능 병원 수</div><div class="cs">가장 적은 시간대가 붉게 표시돼요</div>'
+                + bars(counts, unit="곳", share=False, top="min", color="#E5484D") + "</div>", unsafe_allow_html=True)
+    st.caption("가까운 병원 15곳 중 진료시간을 신고한 곳 기준이에요. 공휴일·임시 휴진은 반영되지 않아요. 출처: 건강보험심사평가원 의료기관별상세정보서비스")
+
+
 def build(rows, lat, lng, radius, depts=()):
     df = pd.DataFrame(rows, columns=COLS)
     if df.empty:
@@ -312,7 +372,8 @@ def web_links(name, url=""):
     return link_cards(items)
 
 
-def card(r, rank=None, i=0):
+def card(r, rank=None, i=0, state=None):
+    extra = f'<span class="tag" style="background:{"#12B76A" if state[0] == "open" else "#9AA9BB"}">{esc(state[1])}</span>' if state else ""
     badge = f'<div class="badge{" top" if rank and rank <= 3 else ""}">{rank}</div>' if rank else f'<div class="badge" style="background:{r["color"]};color:#fff">약</div>'
     doc = ""
     if rank and r["dr"]:
@@ -329,7 +390,7 @@ def card(r, rank=None, i=0):
     if rank:
         links += f'<a target="_blank" href="https://search.naver.com/search.naver?query={quote(r["name"] + " 의료진")}">의료진</a>'
     return (f'<div class="hc" style="--i:{i};--acc:{r["color"]}"><div class="hc-top">{badge}<div style="min-width:0"><div class="hc-name">{esc(r["name"])}</div>'
-            f'<div class="hc-meta"><span class="tag" style="background:{r["color"]}">{r["type"]}</span>{esc(r["addr"])}</div></div>'
+            f'<div class="hc-meta"><span class="tag" style="background:{r["color"]}">{r["type"]}</span>{extra}{esc(r["addr"])}</div></div>'
             f'<div class="hc-dist">{r["dist"]:.1f} km<small>직선거리</small></div></div>{doc}<div class="links">{links}</div></div>')
 
 
@@ -470,7 +531,7 @@ def show_doctors(hosp):
         return
     names = [f"{r['name']} · {r['type']} · {r['dist']:.1f}km" for _, r in h.iterrows()]
     r = h.iloc[names.index(st.selectbox("병원 선택", names, key="doc_pick"))]
-    keys = ["전문의", "일반의", "수련의", "기타(치과·한방 등)"]
+    keys = ["전문의", "일반의", "수련의", "기타"]
     rows = [(f"{x['name']} · {x['dist']:.1f}km", dict(zip(keys, [x["sp"], x["gp"], x["tr"], max(x["dr"] - x["sp"] - x["gp"] - x["tr"], 0)]))) for _, x in h.iterrows()]
     ratio = (h["sp"] / h["dr"]).clip(upper=1) * 100
     my_ratio = min(r["sp"] / r["dr"], 1) * 100 if r["dr"] else 0
@@ -583,8 +644,8 @@ def show_compare(hosp, depts):
 
 picked = st.session_state.get("pick_disease") or {}
 topbar("콕콕", "병원 찾기")
-hero("FIND A HOSPITAL", "추천 진료과 기준으로\n내 주변 병원을 찾아보세요", "지도와 거리순 목록, 의사 구성, 진료시간, 진료과별 전문의 수를 한곳에서 비교해요.",
-     ("전국 병원·약국", "의사·전문의 현황", "진료시간", "직선거리 기준"))
+hero("FIND A HOSPITAL", "추천 진료과 기준으로\n내 주변 병원을 찾아보세요", "지금 문 연 병원을 찾고, 우리 동네 진료가 비는 시간대까지 데이터로 보여줘요.",
+     ("지금 진료 중", "의료 공백 진단", "의사·전문의 현황", "전국 병원·약국"))
 st.page_link("main.py", label="증상 다시 선택")
 
 if not (HIRA or KAKAO):
@@ -595,6 +656,8 @@ if picked:
     st.markdown(f"### {esc(picked.get('n', ''))} "
                 + (f"<span style='color:#6B7684;font-size:.9rem'>상병코드 {esc(picked.get('c', ''))}</span>" if picked.get("c") else ""), unsafe_allow_html=True)
 
+if not get_geolocation:
+    st.warning("위치 모듈(streamlit-js-eval)이 설치되지 않았어요. requirements.txt를 확인하세요.")
 loc = current_location()
 with st.container(key="filters"):
     c1, c2, c3, c4 = st.columns([1.4, 1.4, 1.6, 0.6], vertical_alignment="bottom")
@@ -619,6 +682,7 @@ with st.container(key="filters"):
             st.session_state["geo_n"] = st.session_state.get("geo_n", 0) + 1
             st.rerun()
     radius = st.pills("검색 반경", [1, 2, 3, 5, 10, 20, 30], format_func=lambda x: f"{x}km", default=3, selection_mode="single") or 3
+    only_open = st.toggle("지금 진료 중인 곳만 보기", disabled=not DETAIL_ON, help="진료시간을 신고한 가까운 병원 15곳 기준이에요")
 
 lat, lng = loc["lat"], loc["lng"]
 st.caption(f"{loc['label']} 기준")
@@ -632,10 +696,16 @@ ph.empty()
 df = build(rows, lat, lng, radius, tuple(depts))
 hosp = df[df["type"] != "약국"].reset_index(drop=True) if not df.empty else df
 pharmacies = df[df["type"] == "약국"] if not df.empty else df
+states = open_map(hosp)
+if only_open and not hosp.empty:
+    hosp = hosp[hosp["ykiho"].map(lambda y: (states.get(y) or (None,))[0] == "open")].reset_index(drop=True)
 if err:
     st.error(f"병원 데이터를 불러오지 못했어요: {err}")
 if warn:
     st.warning(warn)
+
+if not hosp.empty:
+    st.markdown(summary(hosp, depts, states), unsafe_allow_html=True)
 
 left, right = st.columns([1.5, 1], gap="large")
 with left:
@@ -643,20 +713,22 @@ with left:
     st.caption("지도는 내 위치와 가장 가까운 병원이 보이도록 최대한 확대돼요. 숫자는 가까운 순위 상위 5곳이고, 점을 누르면 상세가 보여요.")
 with right:
     if hosp.empty:
-        st.markdown('<div class="empty"><b>반경 안에서 병원을 찾지 못했어요</b><br>반경을 넓히거나 진료과를 바꿔 보세요.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="empty"><b>조건에 맞는 병원을 찾지 못했어요</b><br>반경을 넓히거나 진료과를 바꾸거나 ‘지금 진료 중’ 필터를 꺼 보세요.</div>', unsafe_allow_html=True)
     else:
         st.markdown(kpis([("병원", f"{cnt(len(hosp))}곳"), ("가장 가까운 곳", f"{hosp['dist'].min():.1f}km"),
                           ("가장 가까운 병원", f'<span style="font-size:.95rem">{esc(hosp.loc[0, "name"])}</span>')]), unsafe_allow_html=True)
         tab_near, tab_pharm = st.tabs(["가까운순", "약국"])
         with tab_near, st.container(height=520, border=False):
             for i, r in hosp.head(12).iterrows():
-                st.markdown(card(r, i + 1, i), unsafe_allow_html=True)
+                st.markdown(card(r, i + 1, i, states.get(r["ykiho"])), unsafe_allow_html=True)
         with tab_pharm, st.container(height=520, border=False):
             if pharmacies.empty:
                 st.markdown('<div class="empty">약국 정보는 KAKAO_REST_API_KEY가 있어야 나와요.</div>', unsafe_allow_html=True)
             for i, (_, r) in enumerate(pharmacies.sort_values("dist").head(12).iterrows()):
                 st.markdown(card(r, None, i), unsafe_allow_html=True)
         st.caption("진료과 필터는 심평원 진료과목 코드와 병원 이름으로 적용돼요. 순서는 직선거리 기준이고 공식 평가가 아니에요.")
+
+show_gap(states)
 
 if not hosp.empty:
     if DETAIL_ON:
