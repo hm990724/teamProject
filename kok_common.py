@@ -287,7 +287,7 @@ ECG = ('<svg viewBox="0 0 420 90" aria-hidden="true"><path d="M0 50 H110 L124 50
 ARROW = ('<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" '
          'stroke-linejoin="round"><path d="M7 17L17 7M9 7h8v8"/></svg>')
 
-DEMO_USER = {"name": "김콕콕", "email": "demo@kokkok.kr", "age": 34, "sex": "여성"}  # 임시데이터
+DEMO_USER = {"name": "승민좌", "email": "demo@kokkok.kr", "age": 34, "sex": "여성"}  # 임시데이터
 
 
 def esc(x):
