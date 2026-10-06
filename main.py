@@ -441,6 +441,15 @@ def analyze(region, text, sev, age, sex, prefixes, depts):
             "depts": (ai.get("depts") or list(depts))[:3]}
 
 
+def make_consult_ctx(job, out):
+    """온라인 진료(데모) 페이지로 넘길 입력값 + AI 소견. 위젯 키는 페이지 이동 시 사라지므로 별도 키에 저장."""
+    t = out["table"]
+    return {"region": REGIONS[job[0]][0], "text": job[1], "sev": job[2], "age": job[3], "sex": job[4],
+            "opinion": txt(out["ai"].get("opinion")), "advice": txt(out["ai"].get("advice")),
+            "depts": out["depts"], "emergency": out["emergency"],
+            "cands": [f"{n}({c})" for n, c in zip(t["질환명"].head(3), t["상병코드"].head(3))]}
+
+
 def _norm(s):
     return re.sub(r"[\s·\-,]", "", re.sub(r"\s*[\[\(].*?[\]\)]", "", s))
 
@@ -726,7 +735,9 @@ with right:
             st.markdown(skel(3), unsafe_allow_html=True)
             j = st.session_state["job"]
             try:
-                st.session_state["res"] = (j[0], analyze(*j, tuple(REGIONS[j[0]][1]), tuple(REGIONS[j[0]][2])))
+                out = analyze(*j, tuple(REGIONS[j[0]][1]), tuple(REGIONS[j[0]][2]))
+                st.session_state["res"] = (j[0], out)
+                st.session_state["consult_ctx"] = make_consult_ctx(j, out)
                 st.session_state.pop("res_err", None)
             except Exception as e:  # noqa: BLE001
                 st.session_state.pop("res", None)

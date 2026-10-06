@@ -68,6 +68,7 @@ iframe[height="640"]{border-radius:16px;border:1px solid #E3ECF6;box-shadow:0 10
 
 KAKAO, HIRA = env("KAKAO_REST_API_KEY"), env("HIRA_SERVICE_KEY")
 HIRA_DETAIL = env("HIRA_DETAIL_SERVICE_KEY") or HIRA
+TELE_PAGE = "pages/3_telehealth.py"
 
 
 def detail_off(e=None):
@@ -647,6 +648,12 @@ topbar("콕콕", "병원 찾기")
 hero("FIND A HOSPITAL", "추천 진료과 기준으로\n내 주변 병원을 찾아보세요", "지금 문 연 병원을 찾고, 우리 동네 진료가 비는 시간대까지 데이터로 보여줘요.",
      ("지금 진료 중", "의료 공백 진단", "의사·전문의 현황", "전국 병원·약국"))
 st.page_link("main.py", label="증상 다시 선택")
+
+# 온라인 진료(데모): main에서 분석한 입력값이 있을 때만 노출
+if st.session_state.get("consult_ctx"):
+    if st.button("온라인 진료 상담받기 (데모)", type="primary", use_container_width=True, key="to_tele",
+                 help="입력한 증상과 AI 소견을 자동으로 정리해 가상 의사에게 보내는 상용화 시나리오 데모예요"):
+        st.switch_page(TELE_PAGE)
 
 if not (HIRA or KAKAO):
     st.error("`.env`에 HIRA_SERVICE_KEY 또는 KAKAO_REST_API_KEY가 필요해요. (키 이름과 따옴표를 확인해 주세요)")
