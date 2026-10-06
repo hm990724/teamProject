@@ -1,9 +1,12 @@
+import base64
 import html
+import io
 import os
 import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import unquote
 
 import pandas as pd
@@ -304,6 +307,25 @@ def setup(title, css=""):
     st.markdown(f"<style>{BASE_CSS}{css}</style>", unsafe_allow_html=True)
 
 
+@st.cache_data(show_spinner=False)
+def profile_uri(n=11):
+    """로그인 계정 아이콘용 프로필 사진 (data/{n}.jpg|jpeg|png → 96x96 base64)"""
+    base = Path(__file__).resolve().parent / "data"
+    for ext in ("jpg", "jpeg", "png"):
+        p = base / f"{n}.{ext}"
+        if p.exists():
+            try:
+                from PIL import Image, ImageOps
+                im = ImageOps.fit(Image.open(p).convert("RGB"), (96, 96))
+                buf = io.BytesIO()
+                im.save(buf, "JPEG", quality=85)
+                return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+            except Exception:
+                mime = "png" if ext == "png" else "jpeg"
+                return f"data:image/{mime};base64," + base64.b64encode(p.read_bytes()).decode()
+    return ""
+
+
 def notify(title, body="", toast_now=False):
     ss = st.session_state
     ss.setdefault("notifs", []).insert(0, {"t": title, "b": body, "at": datetime.now().strftime("%H:%M"), "new": True})
@@ -356,7 +378,9 @@ def topbar(title, sub=""):
             bell_box(title)
         user = ss.get("user")
         if user:
-            st.markdown(f'<style>.st-key-acct button{{--ini:"{esc(user["name"][:1])}"}}</style>', unsafe_allow_html=True)
+            uri = profile_uri(7)
+            img = f'.st-key-acct button::before{{content:"";background:url("{uri}") center/cover no-repeat!important}}' if uri else ""
+            st.markdown(f'<style>.st-key-acct button{{--ini:"{esc(user["name"][:1])}"}}{img}</style>', unsafe_allow_html=True)
             with acct.container(key="acct"):
                 with st.popover(user["name"]):
                     st.markdown(f"**{esc(user['name'])}**  \n{esc(user['email'])}")
