@@ -2,6 +2,7 @@ import json
 import math
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
@@ -80,6 +81,7 @@ def is_disease(code, name):
     return bool(code and name) and code[0].upper() not in "VWXY" and len(name) <= 60 and "진료를 받은" not in name and "해당상병" not in name
 
 
+@st.cache_data(ttl=21600, show_spinner=False)
 def diss_pages(**extra):
     out, page = [], 1
     while page <= 40:
@@ -151,7 +153,7 @@ def call_ai(prompt):
         if model in tried:
             continue
         tried.append(model)
-        r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent", timeout=60,
+        r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent", timeout=(5, 15),
                           headers={"x-goog-api-key": GEMINI},
                           json={"contents": [{"parts": [{"text": prompt}]}],
                                 "generationConfig": {"responseMimeType": "application/json", "temperature": 0.2}})
@@ -183,6 +185,7 @@ def label_of(col):
     return next((ko for pat, ko in LABELS if re.search(pat, col, re.I)), col)
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
 def fetch_rows(endpoint, code):
     note, raw = "자료 없음", ""
     for year in (date.today().year - 1, date.today().year - 2):
@@ -314,16 +317,13 @@ def fit_text(fi, sex=None):
     return " · ".join(parts)
 
 
-_GS = {}
-
-
+@st.cache_data(ttl=86400, show_spinner=False)
 def gs_fit(code, age, sex):
-    if code not in _GS:
-        try:
-            _GS[code] = profile(fetch_rows(ENDPOINTS["성별·연령별"], code)[0])
-        except Exception:
-            _GS[code] = None
-    return fit(_GS[code], age, sex)
+    try:
+        prof = profile(fetch_rows(ENDPOINTS["성별·연령별"], code)[0])
+    except Exception:
+        prof = None
+    return fit(prof, age, sex)
 
 
 def candidates(df, kws, limit=40):
@@ -371,15 +371,22 @@ def rank(ctx, opinion, cand, hints):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def analyze(region, text, sev, age, sex, prefixes, depts):
+    t0 = time.perf_counter()
+
+    t = time.perf_counter()
     df = pd.DataFrame(icd_list(prefixes), columns=COLS)
+    print(f"[ANALYZE] icd_list: {time.perf_counter() - t:.2f}s | rows={len(df)}")
     pool = len(df)
     who = ((f"{age}세 " if age is not None else "") + (sex or "")).strip()
     ctx = f"불편한 부위: {REGIONS[region][0]}\n불편한 정도: {sev}\n" + (f"환자: {who}\n" if who else "") + f"환자가 직접 쓴 설명: {text}\n"
     ai, err, pick_err = {}, "", ""
+
+    t = time.perf_counter()
     try:
         ai = overview(ctx)
     except Exception as e:
         err = str(e)[:250]
+    print(f"[ANALYZE] overview: {time.perf_counter() - t:.2f}s")
 
     flags = red_flags(text)
     why = str(ai.get("emergency_reason") or "").strip()
@@ -401,29 +408,35 @@ def analyze(region, text, sev, age, sex, prefixes, depts):
         if len(word) >= 3:
             add(word[:2], 0.5)
 
+    t = time.perf_counter()
     extra = []
     for k in ai_kws[:6]:
         try:
             extra += name_search(k)
         except Exception:
             pass
+    print(f"[ANALYZE] name_search: {time.perf_counter() - t:.2f}s | keywords={len(ai_kws[:6])} | extra={len(extra)}")
+
     if extra:
         df = pd.concat([df, pd.DataFrame(extra, columns=COLS)]).drop_duplicates("상병코드").reset_index(drop=True)
     cand = candidates(df, kws)
     kw_hit = sorted(((k, int(df["질환명"].str.contains(k, regex=False).sum())) for k in kws), key=lambda t: (-kws[t[0]], -t[1]))
     kw_hit = [t for t in kw_hit if t[1] > 0][:8]
 
+    t = time.perf_counter()
     fits = {}
     if (age is not None or sex) and not cand.empty:
         codes = list(cand["상병코드"].head(10))
         with ThreadPoolExecutor(3) as ex:
             fits = {c: fi for c, fi in zip(codes, ex.map(lambda c: gs_fit(c, age, sex), codes)) if fi}
+    print(f"[ANALYZE] gs_fit: {time.perf_counter() - t:.2f}s | candidates={min(10, len(cand))} | fit={len(fits)}")
     hints = {c: fit_text(fi, sex) for c, fi in fits.items()}
 
     table, ranked = cand.head(6).assign(가능성="", 근거=""), False
     if not GEMINI:
         pick_err = "GEMINI_API_KEY가 없어서 키워드 순서로만 보여드려요."
     elif not cand.empty:
+        t = time.perf_counter()
         try:
             picked = rank(ctx, ai.get("opinion"), cand, hints)
             if picked.empty:
@@ -432,11 +445,13 @@ def analyze(region, text, sev, age, sex, prefixes, depts):
                 table, ranked = picked, True
         except Exception as e:
             pick_err = str(e)[:250]
+        print(f"[ANALYZE] rank: {time.perf_counter() - t:.2f}s | ranked={ranked}")
     table = table.reset_index(drop=True)
     table["일치어"] = table["질환명"].map(lambda n: sorted([k for k in kws if k in n], key=lambda k: -kws[k])[:4])
     table["연령"] = table["상병코드"].map(lambda c: hints.get(c, ""))
     meta = {"pool": pool, "pool_all": len(df), "kw_total": len(kws), "kw_ai": len(ai_kws), "kw_hit": kw_hit,
             "cand": len(cand), "ranked": ranked, "fit_n": len(fits), "age": age, "sex": sex}
+    print(f"[ANALYZE] TOTAL: {time.perf_counter() - t0:.2f}s | pool={pool} cand={len(cand)}")
     return {"ai": ai, "err": err, "pick_err": pick_err, "table": table, "meta": meta, "emergency": emergency,
             "depts": (ai.get("depts") or list(depts))[:3]}
 
