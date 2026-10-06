@@ -378,7 +378,7 @@ def topbar(title, sub=""):
             bell_box(title)
         user = ss.get("user")
         if user:
-            uri = profile_uri(7)
+            uri = profile_uri(11)
             img = f'.st-key-acct button::before{{content:"";background:url("{uri}") center/cover no-repeat!important}}' if uri else ""
             st.markdown(f'<style>.st-key-acct button{{--ini:"{esc(user["name"][:1])}"}}{img}</style>', unsafe_allow_html=True)
             with acct.container(key="acct"):
