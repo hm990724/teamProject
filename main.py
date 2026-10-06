@@ -133,7 +133,7 @@ def name_search(q: str):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def gemini_models():
-    r = requests.get("https://generativelanguage.googleapis.com/v1beta/models", timeout=15, headers={"x-goog-api-key": GEMINI}, params={"pageSize": 200})
+    r = requests.get("https://generativelanguage.googleapis.com/v1beta/models", timeout=30, headers={"x-goog-api-key": GEMINI}, params={"pageSize": 200})
     if r.status_code != 200:
         raise RuntimeError(f"모델 목록 조회 실패 HTTP {r.status_code} {r.text[:200]}")
     names = [m["name"].split("/")[-1] for m in r.json().get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
