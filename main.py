@@ -11,7 +11,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-from kok_common import bars, donut, env, esc, hero, hira_get, kpis, setup, skel, table_html, topbar, vbars
+from kok_common import bars, donut, env, esc, hero, hira_get, kpis, notify, setup, skel, table_html, topbar, vbars
 
 setup("콕콕")
 
@@ -122,7 +122,7 @@ def name_search(q: str):
         try:
             for name, code in collect(diss_pages(sickType=sick_type, diseaseType="SICK_NM", searchText=q)).items():
                 out.setdefault(name, code)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             last = e
     if not out and last:
         raise RuntimeError(str(last))
@@ -190,7 +190,7 @@ def fetch_rows(endpoint, code):
             try:
                 rows, _, raw = hira_get(f"{DISS}/{endpoint}", {"numOfRows": 500, "pageNo": 1, "sickType": 2, "medTp": 1,
                                                                "sickCd": sick_cd, "year": year}, HIRA_DISEASE, 12)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 note, raw = f"조회 오류: {str(e)[:80]}", str(e)
                 continue
             if rows:
@@ -321,7 +321,7 @@ def gs_fit(code, age, sex):
     if code not in _GS:
         try:
             _GS[code] = profile(fetch_rows(ENDPOINTS["성별·연령별"], code)[0])
-        except Exception:  # noqa: BLE001
+        except Exception:
             _GS[code] = None
     return fit(_GS[code], age, sex)
 
@@ -378,7 +378,7 @@ def analyze(region, text, sev, age, sex, prefixes, depts):
     ai, err, pick_err = {}, "", ""
     try:
         ai = overview(ctx)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         err = str(e)[:250]
 
     flags = red_flags(text)
@@ -405,7 +405,7 @@ def analyze(region, text, sev, age, sex, prefixes, depts):
     for k in ai_kws[:6]:
         try:
             extra += name_search(k)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     if extra:
         df = pd.concat([df, pd.DataFrame(extra, columns=COLS)]).drop_duplicates("상병코드").reset_index(drop=True)
@@ -430,7 +430,7 @@ def analyze(region, text, sev, age, sex, prefixes, depts):
                 pick_err = "후보 안에서 고른 질환이 없어서 키워드 순서로 보여드려요."
             else:
                 table, ranked = picked, True
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             pick_err = str(e)[:250]
     table = table.reset_index(drop=True)
     table["일치어"] = table["질환명"].map(lambda n: sorted([k for k in kws if k in n], key=lambda k: -kws[k])[:4])
@@ -442,7 +442,6 @@ def analyze(region, text, sev, age, sex, prefixes, depts):
 
 
 def make_consult_ctx(job, out):
-    """온라인 진료(데모) 페이지로 넘길 입력값 + AI 소견. 위젯 키는 페이지 이동 시 사라지므로 별도 키에 저장."""
     t = out["table"]
     return {"region": REGIONS[job[0]][0], "text": job[1], "sev": job[2], "age": job[3], "sex": job[4],
             "opinion": txt(out["ai"].get("opinion")), "advice": txt(out["ai"].get("advice")),
@@ -467,7 +466,7 @@ def wiki_summary(name):
             t = _norm(p.get("title", ""))
             if p.get("extract") and len(t) >= 2 and (t == key or (len(t) >= 3 and key.endswith(t)) or (len(key) >= 3 and t.startswith(key))):
                 return p["extract"], p.get("fullurl", "")
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return "", ""
 
@@ -548,7 +547,7 @@ def show_detail(name, code, depts, level=None, reason=None, tag="a"):
         ph.markdown(skel(2), unsafe_allow_html=True)
         try:
             stats = disease_stats(code)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             ph.empty()
             st.warning(f"통계를 불러오지 못했어요. ({str(e)[:120]})")
             return
@@ -556,7 +555,7 @@ def show_detail(name, code, depts, level=None, reason=None, tag="a"):
         info = stats["성별·연령별"]
         try:
             v = verify(info["rows"])
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             v = {"error": f"환자 수를 계산하지 못했어요. ({str(e)[:80]})"}
         if v and v.get("total") is not None:
             lab, cls = {"ok": ("합계 일치", "ok"), "diff": ("합계 불일치", "warn"), "total": ("계 행 기준", "ok"), "part": ("합산값", "warn")}[v["status"]]
@@ -576,7 +575,7 @@ def show_detail(name, code, depts, level=None, reason=None, tag="a"):
             with tab:
                 try:
                     show_stat(key, stats[key], age, sex)
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     st.warning(f"{key} 통계를 표시하지 못했어요. ({str(e)[:100]})")
         st.caption("건강보험 청구 자료라 진단·진료 현황만 있고, 완치·회복 여부 같은 치료 결과는 이 자료에 없어요.")
         extract, url = wiki_summary(name)
@@ -650,7 +649,7 @@ def disease_search(prefixes=None, depts=()):
             show_detail(r["질환명"], r["상병코드"], depts, tag="s")
         with st.expander("목록 전체 보기"):
             st.markdown(table_html(found, scroll=True), unsafe_allow_html=True)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         st.warning(f"질환 목록을 불러오지 못했어요. ({e})")
 
 
@@ -661,20 +660,23 @@ def show_result(res, region):
     if em["on"]:
         st.error(EMERGENCY + (f"\n\n근거: {em['why']}" if em["why"] else ""))
     if ai.get("opinion"):
-        st.markdown('<div class="sec" style="margin-top:6px">AI 종합 소견 <span class="ai" style="margin:0">참고용</span></div>', unsafe_allow_html=True)
-        body = esc(ai["opinion"]) + (f'<br><br><span style="color:#6B7684">{esc(ai["advice"])}</span>' if ai.get("advice") else "")
-        st.markdown(f'<div class="panel" style="line-height:1.7">{body}</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sec" style="margin-top:6px">추천 진료과</div>' + "".join(f'<span class="chip">{esc(d)}</span>' for d in depts), unsafe_allow_html=True)
+        adv = f'<div class="op-adv">{esc(ai["advice"])}</div>' if ai.get("advice") else ""
+        st.markdown('<div class="sec" style="margin-top:6px">AI 종합 소견</div>'
+                    '<div class="panel op"><div class="op-h"><b>입력하신 증상을 바탕으로 정리했어요</b><span class="ai">AI · 참고용</span></div>'
+                    f'<div class="op-b">{esc(ai["opinion"])}</div>{adv}</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec" style="margin-top:24px">추천 진료과</div><div class="dchips">'
+                + "".join(f'<span class="chip">{esc(d)}</span>' for d in depts) + "</div>", unsafe_allow_html=True)
     if depts:
         if st.button("추천 진료과로 가까운 병원 찾기", type="primary", use_container_width=True, key="cta_all"):
             go(f"{REGIONS[region][0]} 증상", "", depts)
+        st.markdown('<div class="cta-gap"></div>', unsafe_allow_html=True)
         for c, d in zip(st.columns(len(depts)), depts):
             if c.button(f"{d} 병원", key=f"cta_{d}", use_container_width=True):
                 go(f"{d} 진료", "", [d])
     if table.empty:
         st.info("입력한 증상과 맞는 질환명을 찾지 못했어요. 증상을 더 자세히 적어 보세요.")
         return
-    st.markdown('<div class="sec">관련 질환 후보</div><div class="sub" style="margin:-8px 0 10px">입력하신 설명과 심평원 상병 목록을 맞춰 본 추정이에요. 진단이 아니에요.</div>',
+    st.markdown('<div class="sec" style="margin-top:30px">관련 질환 후보</div><div class="sub" style="margin:-8px 0 10px">입력하신 설명과 심평원 상병 목록을 맞춰 본 추정이에요. 진단이 아니에요.</div>',
                 unsafe_allow_html=True)
     if res["pick_err"]:
         st.caption(res["pick_err"])
@@ -739,7 +741,10 @@ with right:
                 st.session_state["res"] = (j[0], out)
                 st.session_state["consult_ctx"] = make_consult_ctx(j, out)
                 st.session_state.pop("res_err", None)
-            except Exception as e:  # noqa: BLE001
+                notify("분석이 끝났어요", "추천 진료과: " + (", ".join(out["depts"]) or "없음"))
+                if out["emergency"]["on"]:
+                    notify("응급 가능성 안내", "119 또는 가까운 응급실을 먼저 확인하세요.")
+            except Exception as e:
                 st.session_state.pop("res", None)
                 st.session_state["res_err"] = str(e)
             finally:

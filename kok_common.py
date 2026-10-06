@@ -3,6 +3,7 @@ import os
 import re
 import time
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from urllib.parse import unquote
 
 import pandas as pd
@@ -231,6 +232,40 @@ button[data-testid="stBaseButton-segmented_controlActive"],button[data-testid="s
 .sum .live small::before{background:#6EE7B7;animation:pulse 1.8s ease-out infinite}
 .sum .idle{background:linear-gradient(135deg,#3A4A60,#56677E)}
 .sum .idle small{color:#D5DEE9}.sum .idle small::before{background:#9AA9BB}
+.st-key-tb [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;gap:.4rem!important;align-items:center}
+.st-key-tb [data-testid="stColumn"]{min-width:0!important;width:auto!important;flex:0 0 auto!important}
+.st-key-tb [data-testid="stColumn"]:first-child{flex:1 1 auto!important}
+.st-key-bell button,.st-key-acct button,.st-key-loginbtn button{box-shadow:none!important;transition:background .2s,color .2s,transform .15s var(--ease)}
+.st-key-bell button svg,.st-key-bell button p,.st-key-bell button [data-testid="stIconMaterial"],.st-key-acct button svg,.st-key-acct button [data-testid="stIconMaterial"]{display:none!important}
+.st-key-bell button{position:relative;width:42px;height:42px;min-height:42px;padding:0!important;border-radius:50%!important;background:#fff!important;border:1px solid var(--ln)!important}
+.st-key-bell button::before{content:"";position:absolute;inset:0;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23101E33' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9'/%3E%3Cpath d='M10.3 21a1.94 1.94 0 0 0 3.4 0'/%3E%3C/svg%3E") center/22px 22px no-repeat;transform-origin:50% 12%}
+.st-key-bell button:hover{background:#F1F6FE!important;border-color:#BFD4EE!important}
+.st-key-acct button{background:#fff!important;border:1px solid var(--ln)!important;border-radius:99px!important;min-height:42px;padding:0 14px 0 5px!important;color:var(--tx)!important;font-weight:700;gap:8px}
+.st-key-acct button::before{content:var(--ini,"K");flex:0 0 32px;width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#1D5FD1,#0E8F81);color:#fff;font-weight:800;font-size:.9rem;display:inline-flex;align-items:center;justify-content:center}
+.st-key-acct button:hover{background:#F1F6FE!important;border-color:#BFD4EE!important}
+.st-key-loginbtn button{background:var(--navy)!important;color:#fff!important;border:0!important;border-radius:99px!important;min-height:40px;padding:0 20px!important;font-size:.88rem;font-weight:700;letter-spacing:.02em}
+.st-key-loginbtn button:hover{background:linear-gradient(135deg,#1D5FD1,#0E8F81)!important;transform:translateY(-1px)}
+.st-key-loginbtn button p{color:#fff!important}
+@keyframes ring{0%,100%{transform:rotate(0)}12%{transform:rotate(16deg)}28%{transform:rotate(-14deg)}44%{transform:rotate(10deg)}60%{transform:rotate(-8deg)}76%{transform:rotate(4deg)}}
+@keyframes badgepop{0%{transform:scale(0)}60%{transform:scale(1.35)}100%{transform:scale(1)}}
+.nt{padding:11px 13px;border-radius:12px;border:1px solid var(--ln);margin-bottom:8px;background:#fff;animation:rise .35s var(--ease) both}
+.nt.new{background:#F1F6FE;border-color:#BFD4EE}
+.nt.new b::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:#E5484D;margin-right:7px;vertical-align:middle}
+.nt b{display:block;font-size:.86rem}
+.nt span{font-size:.78rem;color:var(--sb);line-height:1.5}
+.nt small{float:right;font-size:.7rem;color:var(--sb)}
+.op{padding:0!important;overflow:hidden;border-top:4px solid #6B3FD0}
+.op-h{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 22px 12px;border-bottom:1px solid var(--ln);background:linear-gradient(180deg,#FBF9FF,#fff)}
+.op-h b{font-size:1rem;font-weight:800;letter-spacing:-.02em}
+.op-h .ai{margin:0;flex:0 0 auto}
+.op-b{padding:16px 22px 18px;line-height:1.8;font-size:.94rem}
+.op-adv{margin:0 22px 18px;padding:12px 14px;border-radius:12px;background:#F4F7FB;color:var(--sb);font-size:.86rem;line-height:1.65}
+.dchips{margin:4px 0 20px}
+.cta-gap{height:10px}
+.login-card{background:#fff;border:1px solid var(--ln);border-radius:20px;padding:26px 28px;box-shadow:var(--sh2);margin:8px 0 18px;animation:rise .5s var(--ease) both}
+.login-card h3{margin:0 0 6px;font-size:1.2rem;font-weight:800}
+.login-card p{margin:0 0 14px;color:var(--sb);font-size:.9rem;line-height:1.65}
+.acct{display:inline-block;font-size:.8rem;font-weight:700;color:var(--bl2);background:var(--soft);border-radius:99px;padding:5px 12px;margin-bottom:10px}
 @media(max-width:640px){
 .block-container{padding-left:.9rem;padding-right:.9rem}
 [data-testid="stHorizontalBlock"]{flex-wrap:wrap!important;gap:.5rem!important}
@@ -242,6 +277,7 @@ button[data-testid="stBaseButton-segmented_controlActive"],button[data-testid="s
 .kpis{grid-template-columns:repeat(2,1fr)}
 .topbar{flex-wrap:wrap}.topbar .tb{margin-left:0}
 .steps span{min-width:46%}
+.op-h,.op-b{padding-left:16px;padding-right:16px}.op-adv{margin-left:16px;margin-right:16px}
 iframe[height="640"]{height:min(640px,68vh)!important}
 }
 """
@@ -250,6 +286,8 @@ ECG = ('<svg viewBox="0 0 420 90" aria-hidden="true"><path d="M0 50 H110 L124 50
        'L288 66 L298 50 H420"/></svg>')
 ARROW = ('<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" '
          'stroke-linejoin="round"><path d="M7 17L17 7M9 7h8v8"/></svg>')
+
+DEMO_USER = {"name": "김콕콕", "email": "demo@kokkok.kr", "age": 34, "sex": "여성"}  # 임시데이터
 
 
 def esc(x):
@@ -266,9 +304,70 @@ def setup(title, css=""):
     st.markdown(f"<style>{BASE_CSS}{css}</style>", unsafe_allow_html=True)
 
 
+def notify(title, body="", toast_now=False):
+    ss = st.session_state
+    ss.setdefault("notifs", []).insert(0, {"t": title, "b": body, "at": datetime.now().strftime("%H:%M"), "new": True})
+    ss["bell_anim"] = True
+    if toast_now:
+        st.toast(title)
+    else:
+        ss["pending_toast"] = title
+
+
+def login_demo():
+    st.session_state["user"] = dict(DEMO_USER)
+    notify("로그인됐어요", "데모 계정으로 접속했어요.")
+
+
+@st.fragment
+def bell_box(title):
+    ss = st.session_state
+    notifs = ss.get("notifs", [])
+    unread = sum(n["new"] for n in notifs)
+    anim = ss.pop("bell_anim", False) and unread > 0
+    if unread:
+        badge = (f'.st-key-bell button::after{{content:"{min(unread, 9)}{"+" if unread > 9 else ""}";position:absolute;top:2px;right:0;min-width:18px;height:18px;padding:0 5px;'
+                 'border-radius:99px;background:#E5484D;color:#fff;font:800 .68rem/18px Pretendard,sans-serif;text-align:center;box-shadow:0 0 0 2px #fff;'
+                 + ("animation:badgepop .5s var(--ease) both" if anim else "") + '}')
+        ring = '.st-key-bell button::before{animation:ring 1s ease-in-out 2}' if anim else ""
+        st.markdown(f"<style>{badge}{ring}</style>", unsafe_allow_html=True)
+    with st.container(key="bell"):
+        with st.popover("알림"):
+            if not notifs:
+                st.caption("새 알림이 없어요.")
+            for n in notifs[:8]:
+                st.markdown(f'<div class="nt{" new" if n["new"] else ""}"><small>{esc(n["at"])}</small><b>{esc(n["t"])}</b><span>{esc(n["b"])}</span></div>',
+                            unsafe_allow_html=True)
+            if unread and st.button("모두 읽음", key=f"read_{title}", use_container_width=True):
+                for n in notifs:
+                    n["new"] = False
+                st.rerun(scope="fragment")
+
+
 def topbar(title, sub=""):
-    st.markdown(f'<div class="topbar"><div class="logo"></div><b>{esc(title)}</b>' + (f'<span class="s">{esc(sub)}</span>' if sub else "")
-                + '<span class="tb">공공데이터 + AI 참고용</span></div>', unsafe_allow_html=True)
+    ss = st.session_state
+    if ss.get("pending_toast"):
+        st.toast(ss.pop("pending_toast"))
+    with st.container(key="tb"):
+        left, bell, acct = st.columns([10, 1, 2], vertical_alignment="center")
+        left.markdown(f'<div class="topbar"><div class="logo"></div><b>{esc(title)}</b>' + (f'<span class="s">{esc(sub)}</span>' if sub else "")
+                      + '<span class="tb">공공데이터 + AI 참고용</span></div>', unsafe_allow_html=True)
+        with bell:
+            bell_box(title)
+        user = ss.get("user")
+        if user:
+            st.markdown(f'<style>.st-key-acct button{{--ini:"{esc(user["name"][:1])}"}}</style>', unsafe_allow_html=True)
+            with acct.container(key="acct"):
+                with st.popover(user["name"]):
+                    st.markdown(f"**{esc(user['name'])}**  \n{esc(user['email'])}")
+                    if st.button("로그아웃", key=f"out_{title}", use_container_width=True):
+                        ss.pop("user", None)
+                        st.rerun()
+        else:
+            with acct.container(key="loginbtn"):
+                if st.button("로그인", key=f"in_{title}"):
+                    login_demo()
+                    st.rerun()
 
 
 def hero(eyebrow, title, desc, tags=()):

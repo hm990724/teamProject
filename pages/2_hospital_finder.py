@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 
 try:
     from streamlit_js_eval import get_geolocation, streamlit_js_eval
-except Exception:  # noqa: BLE001
+except Exception:
     get_geolocation = streamlit_js_eval = None
 
 from kok_common import (bars, cnt, env, esc, hero, hira_get, kpis, link_cards, open_badge, setup, skel, stack_bars,
@@ -140,14 +140,14 @@ def place_search(q):
                 for d in kakao(path, query=q, size=5):
                     name, addr = d.get("place_name"), d.get("address_name", "")
                     out.append({"label": f"{name} · {addr}" if name else addr, "lat": float(d["y"]), "lng": float(d["x"])})
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
     if not out and len(q) >= 3:
         try:
             r = requests.get("https://nominatim.openstreetmap.org/search", headers={"User-Agent": "hospital-finder/1.0"}, timeout=8,
                              params={"q": q, "format": "json", "limit": 5, "accept-language": "ko"})
             out = [{"label": d["display_name"][:70], "lat": float(d["lat"]), "lng": float(d["lon"])} for d in r.json()]
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     return out
 
@@ -183,7 +183,7 @@ def fetch_hira(lat, lng, radius_km, dept_codes):
     def run(job):
         try:
             return job, *hira_job(lat, lng, radius_km, *job), None
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             return job, [], 0, str(e)[:140]
 
     errs, got = [], {}
@@ -228,7 +228,7 @@ def dept_doctors(ykiho):
         for extra in ({}, {"numOfRows": 100, "pageNo": 1}):
             try:
                 items = hira_get(f"MadmDtlInfoService{ver}/{op}{ver}", {"ykiho": ykiho, **extra}, HIRA_DETAIL, 15)[0]
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 errs.append(f"{op}{ver}: {e}")
                 if "NO_OPENAPI_SERVICE_ERROR" in str(e):
                     break
@@ -259,7 +259,7 @@ def hospital_detail(ykiho):
         try:
             items = hira_get("MadmDtlInfoService2.8/getDtlInfo2.8", {"ykiho": ykiho, **extra}, HIRA_DETAIL, 15)[0]
             return items[0] if items else {}
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             last = e
     raise RuntimeError(str(last))
 
@@ -302,7 +302,7 @@ def open_map(df):
             rows = parse_hours(hospital_detail(y))
             _HRS[y] = rows
             return y, open_state(rows, now)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             detail_off(e)
             return y, None
 
@@ -479,12 +479,12 @@ def load_hospitals(lat, lng, radius, depts):
             rows = [r for dn in (depts or [""]) for r in fetch_kakao(la, ln, radius, "HP8", f"{dn} 병원".strip())]
             if err:
                 warn, err = "심평원 서버가 응답하지 않아 카카오 데이터로 대신 보여드려요. 종별·의사 수 정보는 없어요.", ""
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             err = (err + " / " if err else "") + f"카카오 조회 실패: {str(e)[:100]}"
     if KAKAO:
         try:
             rows += fetch_kakao(la, ln, radius, "PM9", "약국")
-        except Exception:  # noqa: BLE001
+        except Exception:
             warn = (warn + " " if warn else "") + "약국 정보를 불러오지 못했어요."
     return rows, err, warn
 
@@ -502,7 +502,7 @@ def show_hospital_info(r):
     ph.markdown(skel(2), unsafe_allow_html=True)
     try:
         d = hospital_detail(r["ykiho"])
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         ph.empty()
         st.caption(UNREG if detail_off(e) else f"진료시간을 불러오지 못했어요: {str(e)[:300]}")
         return
@@ -559,7 +559,7 @@ def show_doctors(hosp):
                             + bars(data, top=True, share=False) + "</div>", unsafe_allow_html=True)
             else:
                 st.caption("이 병원은 진료과목별 전문의 정보가 없어요.")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             ph.empty()
             st.caption(UNREG if detail_off(e) else f"진료과목별 정보를 불러오지 못했어요: {str(e)[:400]}")
     show_hospital_info(r)
@@ -592,7 +592,7 @@ def show_compare(hosp, depts):
         def run(t):
             try:
                 return t, dict(dept_doctors(t[0])), None
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 return t, {}, f"{t[1]}: {str(e)[:90]}"
 
         rows, errs = [], []
@@ -649,11 +649,12 @@ hero("FIND A HOSPITAL", "추천 진료과 기준으로\n내 주변 병원을 찾
      ("지금 진료 중", "의료 공백 진단", "의사·전문의 현황", "전국 병원·약국"))
 st.page_link("main.py", label="증상 다시 선택")
 
-# 온라인 진료(데모): main에서 분석한 입력값이 있을 때만 노출
 if st.session_state.get("consult_ctx"):
     if st.button("온라인 진료 상담받기 (데모)", type="primary", use_container_width=True, key="to_tele",
                  help="입력한 증상과 AI 소견을 자동으로 정리해 가상 의사에게 보내는 상용화 시나리오 데모예요"):
         st.switch_page(TELE_PAGE)
+    if not st.session_state.get("user"):
+        st.caption("온라인 진료는 로그인이 필요해요. 오른쪽 위에서 데모 계정으로 바로 로그인할 수 있어요.")
 
 if not (HIRA or KAKAO):
     st.error("`.env`에 HIRA_SERVICE_KEY 또는 KAKAO_REST_API_KEY가 필요해요. (키 이름과 따옴표를 확인해 주세요)")
