@@ -153,10 +153,16 @@ def call_ai(prompt):
         if model in tried:
             continue
         tried.append(model)
-        r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent", timeout=(5, 15),
-                          headers={"x-goog-api-key": GEMINI},
-                          json={"contents": [{"parts": [{"text": prompt}]}],
-                                "generationConfig": {"responseMimeType": "application/json", "temperature": 0.2}})
+        cfg = {"responseMimeType": "application/json", "temperature": 0.2}
+        if "2.5" in model:
+            cfg["thinkingConfig"] = {"thinkingBudget": 0}  # 생각 시간 제거 → 훨씬 빨라져요
+        try:
+            r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent", timeout=(5, 45),
+                              headers={"x-goog-api-key": GEMINI},
+                              json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": cfg})
+        except requests.exceptions.RequestException as e:
+            last = f"{model} → {type(e).__name__}"
+            continue  # 타임아웃·연결 실패면 다음 모델로
         if r.status_code == 200:
             return "".join(x.get("text", "") for x in r.json()["candidates"][0]["content"]["parts"])
         last = f"{model} → HTTP {r.status_code} {r.text[:200]}"
