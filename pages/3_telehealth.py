@@ -103,7 +103,7 @@ def clean(v):
 
 
 def _drug_items(data):
-    body = data["response"]["body"]
+    body = (data.get("response") or data)["body"]
     items = body.get("items") or []
     if isinstance(items, dict):
         items = items.get("item", [])
